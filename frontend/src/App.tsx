@@ -1,7 +1,9 @@
 import { NavLink, Route, Routes } from "react-router-dom";
 import HealthPage from "./pages/HealthPage";
+import IVRSimulatorPage from "./pages/IVRSimulatorPage";
 import JourneyPage from "./pages/JourneyPage";
 import PlaceholdersPage from "./pages/PlaceholdersPage";
+import WhatsAppSimulatorPage from "./pages/WhatsAppSimulatorPage";
 
 export default function App() {
   return (
@@ -11,7 +13,7 @@ export default function App() {
           <span className="brand-mark">RV</span>
           <div>
             <strong>Revenue Voice Services</strong>
-            <p>Hackathon POC — P2 Income Certificate</p>
+            <p>Hackathon POC — P3 Multilingual Voice</p>
           </div>
         </div>
         <nav>
@@ -19,6 +21,8 @@ export default function App() {
             Health
           </NavLink>
           <NavLink to="/journey">Apply</NavLink>
+          <NavLink to="/whatsapp">WhatsApp Sim</NavLink>
+          <NavLink to="/ivr">IVR Sim</NavLink>
           <NavLink to="/placeholders">Surfaces</NavLink>
         </nav>
       </header>
@@ -26,11 +30,13 @@ export default function App() {
         <Routes>
           <Route path="/" element={<HealthPage />} />
           <Route path="/journey" element={<JourneyPage />} />
+          <Route path="/whatsapp" element={<WhatsAppSimulatorPage />} />
+          <Route path="/ivr" element={<IVRSimulatorPage />} />
           <Route path="/placeholders" element={<PlaceholdersPage />} />
         </Routes>
       </main>
       <footer>
-        Data sovereignty first · Local-first processing · Modular monolith
+        Data sovereignty first · Local-first voice/NLU · Channel-agnostic envelope
       </footer>
     </div>
   );

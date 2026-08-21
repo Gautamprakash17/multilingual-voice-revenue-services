@@ -6,19 +6,18 @@
 
 Engineer a foundation for a voice-first platform that will later guide citizens through certificate journeys (income, domicile, caste, etc.) across web, WhatsApp, and IVR — while proving that restricted data never leaves the local trust zone.
 
-## POC scope (current phase = P2)
+## POC scope (current phase = P3)
 
-| In P1 + P2 | Out of scope (later) |
-|------------|----------------------|
-| FastAPI foundation, health/ready | Voice STT/TTS |
-| Data classification + boundary gateway | WhatsApp / IVR simulators |
-| Audit + structured logging | Payment adapters |
-| Postgres + Alembic | OCR / document verification |
-| **Income Certificate web text journey** | Officer dashboard |
-| Mock identity (OTP) + consent + documents | Real cloud AI / OpenAI |
-| React Apply UI | Multilingual UI beyond language placeholder |
+| In P1–P3 | Later (P4+) |
+|----------|-------------|
+| Income Certificate journey | Payment adapters |
+| Channel-agnostic MessageEnvelope | Real WhatsApp / telephony |
+| Web + WhatsApp/IVR **simulators** | OCR / doc verification |
+| en / hi / te i18n prompts | Officer dashboard |
+| Local STT/NLU/TTS (mock or optional whisper) | OpenAI / cloud AI |
+| Cross-channel resume | Full analytics stack |
 
-OpenAI / cloud AI is **optional** and **not used** in P1/P2.
+OpenAI / cloud AI is **optional** and **not used**.
 
 ## Architecture summary
 

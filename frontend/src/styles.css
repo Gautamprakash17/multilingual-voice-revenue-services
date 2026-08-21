@@ -317,3 +317,83 @@ button.ghost {
   color: #9bb5a8;
 }
 
+.lang-pills {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.wa-thread {
+  min-height: 280px;
+  max-height: 420px;
+  overflow: auto;
+  padding: 1rem;
+  border-radius: 0.75rem;
+  background: #0b1a14;
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.wa-bubble {
+  max-width: 80%;
+  padding: 0.55rem 0.75rem;
+  border-radius: 0.55rem;
+  white-space: pre-wrap;
+}
+
+.wa-bubble.me {
+  align-self: flex-end;
+  background: #1f5c40;
+}
+
+.wa-bubble.bot {
+  align-self: flex-start;
+  background: #24352d;
+}
+
+.resume-box {
+  display: grid;
+  gap: 0.5rem;
+  margin: 1rem 0;
+}
+
+.resume-box input {
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 0.5rem;
+  padding: 0.55rem 0.75rem;
+}
+
+.phone {
+  max-width: 280px;
+  margin: 1rem 0;
+  padding: 1rem;
+  border-radius: 1.25rem;
+  border: 1px solid var(--border);
+  background: #101c17;
+}
+
+.phone-screen {
+  text-align: center;
+  font-size: 1.4rem;
+  letter-spacing: 0.08em;
+  padding: 0.75rem;
+  margin-bottom: 0.75rem;
+  background: #06110c;
+  border-radius: 0.5rem;
+}
+
+.keypad {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.4rem;
+}
+
+.prompt-line {
+  color: var(--accent);
+  font-weight: 600;
+}
+

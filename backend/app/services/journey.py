@@ -16,6 +16,8 @@ from app.models.application import Application, ConversationSession
 from app.platform.audit import write_audit_event
 from app.services.application_ids import generate_application_id
 from app.services.catalogue import ServiceDefinition, get_service
+from app.services.i18n import field_prompt as i18n_field_prompt
+from app.services.i18n import t as i18n_t
 from app.services.state_machine import (
     InvalidTransitionError,
     JourneyState,
@@ -137,9 +139,12 @@ class JourneyService:
         present = {d.document_code for d in app.documents}
         return [c for c in self.service.required_document_codes() if c not in present]
 
-    def _field_prompt(self, field_name: str) -> str:
-        field = self.service.field_by_name(field_name)
-        return field.prompt if field else field_name
+    def _field_prompt(self, field_name: str, app: Application | None = None) -> str:
+        lang = self._lang(app) if app else "en"
+        return i18n_field_prompt(field_name, lang)
+
+    def _lang(self, app: Application) -> str:
+        return app.language or "en"
 
     def _assert_local_only(self, trace_id: str | None) -> None:
         """Prove no cloud provider is invoked for restricted journey data."""
@@ -192,13 +197,11 @@ class JourneyService:
                 "state": state.value,
             },
         )
-        prompt = self.service.prompts.get(
-            "language_select", "Please choose a language: en, hi, or te."
-        )
+        prompt = i18n_t("language_select", "en")
         return JourneyReply(
             application_id=app_ref,
             state=state.value,
-            message="Welcome to the Revenue Certificate services.",
+            message=i18n_t("welcome", "en"),
             prompt=prompt,
             access_token=token,
             data={"supported_languages": self.service.languages},
@@ -520,7 +523,7 @@ class JourneyService:
             application_id=app.application_id,
             state=app.current_state,
             message=f"Starting {self.service.display_name}.",
-            prompt=self._field_prompt(first),
+            prompt=self._field_prompt(first, app),
             data={"next_field": first},
         )
 
@@ -580,7 +583,7 @@ class JourneyService:
                 application_id=app.application_id,
                 state=app.current_state,
                 message=result.error or "Invalid value",
-                prompt=self._field_prompt(field_name),
+                prompt=self._field_prompt(field_name, app),
                 error="validation_failed",
                 expected_format=result.expected_format,
                 data={"field": field_name},
@@ -628,7 +631,7 @@ class JourneyService:
                 application_id=app.application_id,
                 state=app.current_state,
                 message=f"Recorded {field_name}.",
-                prompt=self._field_prompt(nxt),
+                prompt=self._field_prompt(nxt, app),
                 data={"next_field": nxt},
             )
 
@@ -664,7 +667,7 @@ class JourneyService:
             application_id=app.application_id,
             state=app.current_state,
             message=f"Correcting {field_name}.",
-            prompt=self._field_prompt(field_name),
+            prompt=self._field_prompt(field_name, app),
             data={"next_field": field_name},
         )
 

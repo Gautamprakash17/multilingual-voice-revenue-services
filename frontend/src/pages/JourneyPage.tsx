@@ -1,9 +1,10 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import {
+  encodePocVoice,
   getJourney,
   postConsent,
-  sendJourneyMessage,
+  sendChannelMessage,
   startJourney,
   uploadDocument,
   type JourneyResponse,
@@ -12,14 +13,26 @@ import {
 type ChatItem = { role: "bot" | "user" | "system"; text: string };
 
 const DOC_CODES = ["IDENTITY_PROOF", "ADDRESS_PROOF", "INCOME_PROOF"] as const;
+const LANGS = [
+  { code: "en", label: "English" },
+  { code: "hi", label: "हिन्दी" },
+  { code: "te", label: "తెలుగు" },
+];
 
 const PERSONA_HINT =
   "Demo personas: Lakshmi 9876543210 / OTP 123456 · Ramesh 9123456780 / OTP 654321 · Anita 9988776655 / OTP 112233";
+
+function playAudio(b64: string | null | undefined, mime?: string | null) {
+  if (!b64) return;
+  const audio = new Audio(`data:${mime || "audio/wav"};base64,${b64}`);
+  void audio.play().catch(() => undefined);
+}
 
 export default function JourneyPage() {
   const [applicationId, setApplicationId] = useState<string | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [state, setState] = useState<string>("—");
+  const [language, setLanguage] = useState<string>("en");
   const [prompt, setPrompt] = useState<string>("");
   const [input, setInput] = useState("");
   const [chat, setChat] = useState<ChatItem[]>([]);
@@ -28,6 +41,10 @@ export default function JourneyPage() {
   const [review, setReview] = useState<Record<string, unknown> | null>(null);
   const [docCode, setDocCode] = useState<string>(DOC_CODES[0]);
   const [last, setLast] = useState<JourneyResponse | null>(null);
+  const [transcript, setTranscript] = useState<string>("");
+  const [recording, setRecording] = useState(false);
+  const mediaRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
 
   const missingDocs = useMemo(() => {
     const missing = last?.data?.missing_documents;
@@ -40,8 +57,11 @@ export default function JourneyPage() {
     setPrompt(reply.prompt || "");
     setApplicationId(reply.application_id);
     if (reply.access_token) setToken(reply.access_token);
+    if (reply.language) setLanguage(reply.language);
+    if (reply.transcript) setTranscript(reply.transcript);
     const lines = [reply.message];
     if (reply.prompt) lines.push(reply.prompt);
+    if (reply.intent) lines.push(`Intent: ${reply.intent}`);
     if (reply.error) lines.push(`Error: ${reply.error}`);
     if (reply.expected_format) lines.push(`Expected: ${reply.expected_format}`);
     setChat((prev) => [...prev, { role: "bot", text: lines.filter(Boolean).join("\n") }]);
@@ -49,9 +69,8 @@ export default function JourneyPage() {
     if (reviewData && typeof reviewData === "object") {
       setReview(reviewData as Record<string, unknown>);
     }
-    if (reply.state === "SUBMITTED") {
-      setReview(null);
-    }
+    if (reply.state === "SUBMITTED") setReview(null);
+    playAudio(reply.audio_b64, reply.audio_mime);
   }
 
   async function onStart() {
@@ -59,6 +78,7 @@ export default function JourneyPage() {
     setError(null);
     setChat([]);
     setReview(null);
+    setTranscript("");
     try {
       const reply = await startJourney();
       pushBot(reply);
@@ -70,10 +90,6 @@ export default function JourneyPage() {
     }
   }
 
-  async function applyReply(reply: JourneyResponse) {
-    pushBot(reply);
-  }
-
   async function onSend(event: FormEvent) {
     event.preventDefault();
     if (!applicationId || !token || !input.trim()) return;
@@ -83,8 +99,12 @@ export default function JourneyPage() {
     setBusy(true);
     setError(null);
     try {
-      const reply = await sendJourneyMessage(applicationId, token, text);
-      await applyReply(reply);
+      const reply = await sendChannelMessage("web", applicationId, token, {
+        text,
+        language,
+        modality: "text",
+      });
+      pushBot(reply);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Message failed");
     } finally {
@@ -92,17 +112,85 @@ export default function JourneyPage() {
     }
   }
 
+  async function sendLanguage(code: string) {
+    setLanguage(code);
+    if (!applicationId || !token) return;
+    setBusy(true);
+    try {
+      const reply = await sendChannelMessage("web", applicationId, token, {
+        text: code,
+        language: code,
+      });
+      setChat((prev) => [...prev, { role: "user", text: `Language: ${code}` }]);
+      pushBot(reply);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Language failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onVoiceSubmit(spoken: string) {
+    if (!applicationId || !token || !spoken.trim()) return;
+    setBusy(true);
+    setError(null);
+    setChat((prev) => [...prev, { role: "user", text: `🎤 ${spoken}` }]);
+    try {
+      const reply = await sendChannelMessage("web", applicationId, token, {
+        modality: "voice",
+        language,
+        audio_b64: encodePocVoice(spoken),
+        transcript: spoken,
+      });
+      pushBot(reply);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Voice failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function toggleRecord() {
+    if (recording && mediaRef.current) {
+      mediaRef.current.stop();
+      setRecording(false);
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      chunksRef.current = [];
+      recorder.ondataavailable = (e) => {
+        if (e.data.size) chunksRef.current.push(e.data);
+      };
+      recorder.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop());
+        // POC: use typed transcript box if Web Speech unavailable;
+        // fall back to input text as spoken phrase for MockSTT.
+        const spoken = input.trim() || "YES";
+        void onVoiceSubmit(spoken);
+      };
+      mediaRef.current = recorder;
+      recorder.start();
+      setRecording(true);
+    } catch {
+      // Mic denied — still allow typed "voice" via push-to-talk semantics
+      const spoken = input.trim();
+      if (spoken) void onVoiceSubmit(spoken);
+      else setError("Allow microphone or type phrase then press Speak");
+    }
+  }
+
   async function onConsent(granted: boolean) {
     if (!applicationId || !token) return;
     setBusy(true);
-    setError(null);
     try {
       const reply = await postConsent(applicationId, token, granted);
       setChat((prev) => [
         ...prev,
         { role: "user", text: granted ? "YES (consent)" : "NO (decline)" },
       ]);
-      await applyReply(reply);
+      pushBot(reply);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Consent failed");
     } finally {
@@ -113,33 +201,14 @@ export default function JourneyPage() {
   async function onUpload(file: File | null) {
     if (!file || !applicationId || !token) return;
     setBusy(true);
-    setError(null);
-    setChat((prev) => [
-      ...prev,
-      { role: "user", text: `Upload ${docCode}: ${file.name}` },
-    ]);
+    setChat((prev) => [...prev, { role: "user", text: `Upload ${docCode}: ${file.name}` }]);
     try {
       const reply = await uploadDocument(applicationId, token, docCode, file);
-      await applyReply(reply);
-      if (reply.data?.missing_documents && Array.isArray(reply.data.missing_documents)) {
-        const next = (reply.data.missing_documents as string[])[0];
-        if (next) setDocCode(next);
-      }
+      pushBot(reply);
+      const missing = reply.data?.missing_documents;
+      if (Array.isArray(missing) && missing[0]) setDocCode(String(missing[0]));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onRefresh() {
-    if (!applicationId || !token) return;
-    setBusy(true);
-    try {
-      const reply = await getJourney(applicationId, token);
-      await applyReply(reply);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Refresh failed");
     } finally {
       setBusy(false);
     }
@@ -151,7 +220,7 @@ export default function JourneyPage() {
         <div>
           <h1>Income Certificate</h1>
           <p className="lede">
-            Web text journey (P2). Restricted data stays local. No voice / WhatsApp / IVR yet.
+            Voice + text web journey (P3). Languages: en / hi / te. Restricted data stays local.
           </p>
         </div>
         <div className="journey-meta">
@@ -163,6 +232,10 @@ export default function JourneyPage() {
             <span className="label">State</span>
             <strong className="state-pill">{state}</strong>
           </div>
+          <div>
+            <span className="label">Language</span>
+            <strong>{language}</strong>
+          </div>
         </div>
       </div>
 
@@ -173,14 +246,35 @@ export default function JourneyPage() {
         <button
           type="button"
           className="ghost"
-          onClick={() => void onRefresh()}
-          disabled={busy || !applicationId}
+          disabled={busy || !applicationId || !token}
+          onClick={() => {
+            if (!applicationId || !token) return;
+            void getJourney(applicationId, token).then(pushBot);
+          }}
         >
-          Refresh status
+          Refresh
         </button>
+        <div className="lang-pills">
+          {LANGS.map((l) => (
+            <button
+              key={l.code}
+              type="button"
+              className={language === l.code ? "" : "ghost"}
+              disabled={busy || !applicationId}
+              onClick={() => void sendLanguage(l.code)}
+            >
+              {l.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {error && <div className="alert error">{error}</div>}
+      {transcript && (
+        <p className="meta">
+          Last transcript: <em>{transcript}</em>
+        </p>
+      )}
 
       <div className="chat-log">
         {chat.map((item, idx) => (
@@ -193,14 +287,9 @@ export default function JourneyPage() {
       {state === "CONSENT" && (
         <div className="consent-bar">
           <button type="button" onClick={() => void onConsent(true)} disabled={busy}>
-            I agree (consent)
+            I agree
           </button>
-          <button
-            type="button"
-            className="ghost"
-            onClick={() => void onConsent(false)}
-            disabled={busy}
-          >
+          <button type="button" className="ghost" onClick={() => void onConsent(false)} disabled={busy}>
             Decline
           </button>
         </div>
@@ -209,7 +298,7 @@ export default function JourneyPage() {
       {(state === "DOCUMENT_CAPTURE" || state === "DOCUMENT_REJECTED") && (
         <div className="upload-bar">
           <label>
-            Document type
+            Document
             <select value={docCode} onChange={(e) => setDocCode(e.target.value)}>
               {DOC_CODES.map((code) => (
                 <option key={code} value={code}>
@@ -221,7 +310,7 @@ export default function JourneyPage() {
           </label>
           <input
             type="file"
-            accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg"
+            accept=".pdf,.png,.jpg,.jpeg"
             onChange={(e) => void onUpload(e.target.files?.[0] ?? null)}
             disabled={busy}
           />
@@ -232,25 +321,6 @@ export default function JourneyPage() {
         <article className="card review-card">
           <h2>Review</h2>
           <pre>{JSON.stringify(review, null, 2)}</pre>
-          <div className="consent-bar">
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => {
-                setInput("CONFIRM");
-              }}
-            >
-              Prepare CONFIRM
-            </button>
-            <button
-              type="button"
-              className="ghost"
-              disabled={busy}
-              onClick={() => setInput("CORRECT")}
-            >
-              Prepare CORRECT
-            </button>
-          </div>
         </article>
       )}
 
@@ -258,11 +328,19 @@ export default function JourneyPage() {
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder={prompt || "Type your reply…"}
+          placeholder={prompt || "Type or speak…"}
           disabled={busy || !applicationId}
         />
         <button type="submit" disabled={busy || !applicationId || !input.trim()}>
           Send
+        </button>
+        <button
+          type="button"
+          className={recording ? "" : "ghost"}
+          disabled={busy || !applicationId}
+          onClick={() => void toggleRecord()}
+        >
+          {recording ? "Stop" : "Speak"}
         </button>
       </form>
     </section>

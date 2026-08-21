@@ -22,6 +22,12 @@ export type JourneyResponse = {
   data?: Record<string, unknown>;
   error?: string | null;
   expected_format?: string | null;
+  language?: string | null;
+  channel?: string | null;
+  transcript?: string | null;
+  intent?: string | null;
+  audio_b64?: string | null;
+  audio_mime?: string | null;
 };
 
 async function parseJourney(res: Response): Promise<JourneyResponse> {
@@ -121,4 +127,71 @@ export async function uploadDocument(
     },
   );
   return parseJourney(res);
+}
+
+export async function startChannel(channel: string): Promise<JourneyResponse> {
+  const res = await fetch(`${API_BASE}/api/v1/channels/${channel}/start`, {
+    method: "POST",
+  });
+  return parseJourney(res);
+}
+
+export async function sendChannelMessage(
+  channel: string,
+  applicationId: string,
+  token: string,
+  payload: {
+    text?: string;
+    modality?: string;
+    language?: string;
+    dtmf?: string;
+    audio_b64?: string;
+    transcript?: string;
+  },
+): Promise<JourneyResponse> {
+  const res = await fetch(`${API_BASE}/api/v1/channels/${channel}/message`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Session-Token": token,
+    },
+    body: JSON.stringify({
+      application_id: applicationId,
+      modality: payload.modality || "text",
+      ...payload,
+    }),
+  });
+  return parseJourney(res);
+}
+
+export async function resumeChannel(
+  applicationId: string,
+  token: string,
+  channel: string,
+): Promise<JourneyResponse> {
+  const res = await fetch(`${API_BASE}/api/v1/channels/resume`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Session-Token": token,
+    },
+    body: JSON.stringify({ application_id: applicationId, channel }),
+  });
+  return parseJourney(res);
+}
+
+export async function fetchMetrics(): Promise<Record<string, unknown>> {
+  const res = await fetch(`${API_BASE}/api/v1/metrics`);
+  if (!res.ok) throw new Error("Metrics unavailable");
+  return res.json() as Promise<Record<string, unknown>>;
+}
+
+/** Encode a POC voice marker understood by MockSTTProvider. */
+export function encodePocVoice(transcript: string): string {
+  const bytes = new TextEncoder().encode(`POCSTT:${transcript}`);
+  let binary = "";
+  bytes.forEach((b) => {
+    binary += String.fromCharCode(b);
+  });
+  return btoa(binary);
 }

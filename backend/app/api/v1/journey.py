@@ -87,11 +87,22 @@ def post_message(
     gateway: DataBoundaryGateway = Depends(get_gateway),
     x_session_token: str | None = Header(default=None),
 ) -> JourneyResponse:
+    """Web text messages go through the channel-agnostic envelope + orchestrator."""
     token = _require_token(x_session_token)
-    service = JourneyService(db, gateway=gateway)
+    from app.channels.orchestrator import ChannelOrchestrator
+
+    orch = ChannelOrchestrator(db, gateway=gateway)
     try:
-        reply = service.handle_message(
-            application_id, token, body.text, trace_id=_trace(request)
+        reply = orch.process_channel_payload(
+            "web",
+            {
+                "application_id": application_id,
+                "access_token": token,
+                "session_ref": token,
+                "modality": "text",
+                "text": body.text,
+                "trace_id": _trace(request),
+            },
         )
         db.commit()
     except LookupError:
@@ -101,7 +112,24 @@ def post_message(
     except InvalidTransitionError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from None
-    return _to_response(reply)
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return JourneyResponse(
+        application_id=reply.application_id,
+        state=reply.state,
+        message=reply.message,
+        prompt=reply.prompt,
+        access_token=reply.access_token,
+        data={
+            **(reply.data or {}),
+            "language": reply.language,
+            "intent": reply.intent,
+            "channel": reply.channel,
+        },
+        error=reply.error,
+        expected_format=reply.expected_format,
+    )
 
 
 @router.post("/{application_id}/consent", response_model=JourneyResponse)
