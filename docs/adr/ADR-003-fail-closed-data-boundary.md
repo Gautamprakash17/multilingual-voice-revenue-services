@@ -1,6 +1,6 @@
 # ADR-003: Fail-Closed Data Boundary
 
-**Status:** Accepted  
+**Status:** Accepted
 **Context:** Sovereignty scoring requires enforced isolation, not convention.
 
 **Decision:**

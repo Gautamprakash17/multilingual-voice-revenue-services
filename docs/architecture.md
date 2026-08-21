@@ -1,6 +1,6 @@
 # Architecture — Multilingual Voice-First Revenue Services Platform
 
-**Status:** Hackathon POC — current implementation  
+**Status:** Hackathon POC — current implementation
 **Style:** Modular monolith (not microservices)
 
 ## Purpose
@@ -64,7 +64,14 @@ Environment-driven via `.env` (see `.env.example`). Secrets are never committed.
 
 ## Related docs
 
+- [Diagrams (C4 + sequences)](./diagrams.md)
+- [Requirement coverage](./REQUIREMENT_COVERAGE.md)
+- [Demo runbook](./DEMO_RUNBOOK.md)
+- [Limitations](./LIMITATIONS.md)
 - [Data classification](./data-classification.md)
+- [Personas and scripts](./personas-and-scripts.md)
+- [Document samples](./document-samples.md)
+- [Test evidence](./TEST_EVIDENCE.md)
 - [ADR-001 Modular monolith](./adr/ADR-001-modular-monolith.md)
 - [ADR-002 Local-first data processing](./adr/ADR-002-local-first-data-processing.md)
 - [ADR-003 Fail-closed data boundary](./adr/ADR-003-fail-closed-data-boundary.md)

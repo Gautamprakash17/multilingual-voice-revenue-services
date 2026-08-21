@@ -34,3 +34,5 @@ Automated tests assert:
 - denied requests make zero HTTP calls
 - audit events omit restricted values
 - unknown policy/destination fails closed
+
+See also [diagrams](./diagrams.md) (boundary sequence), [test evidence](./TEST_EVIDENCE.md), and the live demo boundary step in [DEMO_RUNBOOK.md](./DEMO_RUNBOOK.md).

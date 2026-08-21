@@ -1,81 +1,142 @@
 # Multilingual Voice-First Revenue Services Platform
 
-> **Hackathon POC** — not a production system. Built for the AI Club / Revenue Department case: voice-first, multilingual, channel-agnostic certificate services with **enforced local processing of restricted mock citizen/government data**.
+> **Hackathon proof of concept — not a production system.**
+> Voice-first, multilingual, channel-agnostic certificate services for a Revenue Department scenario, with **enforced local processing of restricted mock citizen and government-like data**.
 
-## Project purpose
+## Problem
 
-A voice-first platform that guides citizens through certificate journeys (income and related catalogue services) across web, WhatsApp, and IVR channels, while proving that restricted mock citizen and government-like data never leaves the local trust zone.
+Citizens need guided help to complete certificate applications across languages and channels (web, messaging, telephony). Restricted personal and application data must remain under local control. Production WhatsApp, IVR, payments, and identity networks are unavailable in a hackathon setting, so the POC must still prove an end-to-end, secure, demoable path.
 
-## Current POC Scope
+## Solution
 
-### Implemented Capabilities
+A **modular monolith** that:
+
+1. Runs a catalogue-driven **Income Certificate** conversational journey (voice and text)
+2. Serves **Web**, **WhatsApp simulator**, and **IVR simulator** through one message envelope
+3. Enforces **fail-closed data classification** via a **Data Boundary Gateway**
+4. Completes **document verification**, **mock payment**, **receipt**, **status/correction**, and **officer review**
+5. Ships with Docker Compose for reproducible demos and automated tests for sovereignty and journey invariants
+
+## POC scope
+
+| In scope | Out of scope |
+|----------|--------------|
+| One complete certificate journey (Income Certificate) | Multiple live production certificate types |
+| Mock OTP, payment, OCR/verification | Real Aadhaar / UPI / treasury accounts |
+| WhatsApp & IVR **simulators** | Live Meta WhatsApp / PSTN |
+| Local/mock STT, TTS, rule NLU | Cloud LLM on restricted data |
+| Lightweight metrics + audit | Kubernetes, ELK, Grafana |
+| Officer dashboard with shared POC token | Enterprise IdP |
+
+Details: [docs/LIMITATIONS.md](docs/LIMITATIONS.md) · Coverage: [docs/REQUIREMENT_COVERAGE.md](docs/REQUIREMENT_COVERAGE.md)
+
+## Implemented capabilities
 
 | Capability | Notes |
 |------------|--------|
-| FastAPI backend and health/readiness | `/api/v1/health`, `/api/v1/ready` |
-| Data classification and Data Boundary Gateway | Fail-closed `RESTRICTED` / `INTERNAL` / `PUBLIC_SAFE` |
-| PostgreSQL and Alembic | Application, session, document, and audit schema |
-| Append-only audit logging | Safe metadata only; no raw restricted payloads |
-| Income Certificate application journey | Deterministic conversation state machine |
-| Mock OTP authentication | Seeded synthetic personas only |
-| Consent handling | Explicit grant required before form capture |
-| Form capture and validation | Config-driven rules from service catalogue |
-| Document upload | Local storage, MIME/size/checksum, `RESTRICTED` |
-| Document OCR and verification | Deterministic local/mock adapters (`VERIFIED` / `MISMATCH` / `UNREADABLE`) |
-| Fee quote and payment | Mock payment provider (`SUCCESS` / `FAILURE` / `TIMEOUT`) with retry |
-| Receipt generation | Local plain-text receipt after successful payment/submit |
-| Officer review dashboard | Approve, reject, request correction, escalate with RBAC |
-| Post-submit processing status | Under review → correction / approved / rejected / issued |
-| Multilingual support | English, Hindi, Telugu (i18n prompt bundles) |
-| Channel-agnostic message envelope | Shared contract for all channels |
-| Web text and voice interaction | Push-to-talk / record-style voice for the POC |
-| WhatsApp simulator | Realistic adapter UI; not real WhatsApp |
-| IVR simulator | DTMF + simulated speech; not real telephony |
-| Local / mock STT and TTS | Optional faster-whisper if installed; mock default |
-| Local rule-based NLU | Deterministic intent/slot extraction; no external LLM |
-| Cross-channel session resume | Continue an application across channels |
-| Operational metrics | Lightweight in-process metrics API |
-| Docker Compose deployment | Reproducible local stack |
+| FastAPI health / readiness | `/api/v1/health`, `/api/v1/ready` |
+| Data classification + Data Boundary Gateway | `RESTRICTED` / `INTERNAL` / `PUBLIC_SAFE`, fail-closed |
+| PostgreSQL + Alembic | Applications, sessions, documents, payments, receipts, audit |
+| Append-only audit | Safe metadata only |
+| Income Certificate journey | Deterministic state machine |
+| Mock OTP authentication | Synthetic personas only |
+| Consent | Required before form capture |
+| Form capture + validation | Catalogue YAML rules |
+| Document upload + verification | Local store; mock OCR (`VERIFIED` / `MISMATCH` / `UNREADABLE`) |
+| Fee quote + payment | Mock `SUCCESS` / `FAILURE` / `TIMEOUT` + retry |
+| Receipt | Local plain-text receipt |
+| Officer review | Approve / reject / request correction / escalate (RBAC token) |
+| Status + correction | Citizen + officer paths |
+| Multilingual | English, Hindi, Telugu |
+| Channel envelope | Web, WhatsApp sim, IVR sim |
+| Cross-channel resume | Shared application + session token |
+| Local/mock STT & TTS + rule NLU | No external LLM for restricted data |
+| Operational metrics | `GET /api/v1/metrics` |
+| Docker Compose | Reproducible local stack |
 
-### Planned / Optional Extensions
+## Architecture
 
-| Extension | Notes |
-|-----------|--------|
-| Richer local speech models | Higher-accuracy on-prem STT/TTS |
-| Production WhatsApp / telephony | Swap simulators for real channel providers |
-| Additional certificate journeys | Same engine; catalogue-driven definitions |
-| Optional cloud AI | Only for approved `PUBLIC_SAFE` content via the gateway |
+Modular monolith with two trust zones:
 
-Cloud AI is optional. The current implementation uses local processing for restricted data and does not require external AI services.
+- **Trust Zone A (local):** API, channels, orchestrator, journey, gateway, Postgres, audit, local providers, document volume
+- **Trust Zone B (optional cloud stub):** only `PUBLIC_SAFE` + explicit approval; **restricted always denied**
 
-## Architecture summary
+```
+Citizen / Officer UI  →  FastAPI  →  Journey / Officer services
+                              ↓
+                     Data Boundary Gateway
+                              ↓
+              Local providers  |  (blocked) Cloud stub
+```
 
-Modular monolith:
+- [Architecture overview](docs/architecture.md)
+- [Mermaid context, container, and sequence diagrams](docs/diagrams.md)
+- [Data classification](docs/data-classification.md)
+- ADRs under `docs/adr/`
 
-- **Trust Zone A (local):** API, channel adapters, orchestrator, boundary gateway, Postgres, audit, local STT/NLU/TTS providers
-- **Trust Zone B (optional cloud):** Provider stubs only; egress is policy-gated. Restricted data is never sent to public cloud
+## Security and data sovereignty
 
-Classifications: `RESTRICTED` · `INTERNAL` · `PUBLIC_SAFE` (fail-closed → `RESTRICTED`).
+- No secrets in git (`.env` ignored; use `.env.example`)
+- Fail-closed classification; restricted never allowed to cloud
+- Boundary allow/deny audited without raw restricted payloads
+- Structured logs redact tokens, OTPs, transcripts, and audio
+- API errors do not return stack traces
+- Officer actions require `X-Officer-Token` (citizen session tokens are insufficient)
 
-See [docs/architecture.md](docs/architecture.md) and [docs/data-classification.md](docs/data-classification.md).
+## Channels and multilingual support
 
-## Local setup
+| Channel | UI | Nature |
+|---------|----|--------|
+| Web | `/journey` | Text + voice |
+| WhatsApp | `/whatsapp` | Simulator |
+| IVR | `/ivr` | Simulator (DTMF + speech-style) |
+
+Languages: **en**, **hi**, **te** (`config/i18n/`). Scripts and personas: [docs/personas-and-scripts.md](docs/personas-and-scripts.md).
+
+## Certificate journey (Income Certificate)
+
+`LANGUAGE_SELECT → AUTHENTICATE → CONSENT → SERVICE_SELECT → FORM_CAPTURE → DOCUMENT_CAPTURE → REVIEW_CONFIRM → FEE_QUOTE → PAYMENT → SUBMITTED`
+Recovery states include `AUTH_FAILED`, `DOCUMENT_REJECTED`, `PAYMENT_FAILED`, `CORRECTION`, `ESCALATED`.
+Post-submit processing: `UNDER_REVIEW` → correction / `APPROVED`→`ISSUED` / `REJECTED`.
+
+## Mocked integrations
+
+Identity OTP, payment, OCR/verification, WhatsApp, IVR, and optional cloud AI are **deterministic mocks/stubs** so demos stay offline-safe and reproducible.
+
+## Setup
 
 ### Prerequisites
 
-- Python 3.12+
-- Node.js 20+
-- Docker + Docker Compose
+Python 3.12+, Node.js 20+, Docker + Docker Compose.
+
+### Docker (recommended for judges)
+
+```bash
+cp .env.example .env
+docker compose up --build -d
+curl -s http://localhost:8080/api/v1/health
+curl -s http://localhost:8080/api/v1/ready
+```
+
+| Service | URL |
+|---------|-----|
+| API | http://localhost:8080 |
+| UI | http://localhost:5174 |
+| Apply | http://localhost:5174/journey |
+| Officer | http://localhost:5174/officer |
+| WhatsApp sim | http://localhost:5174/whatsapp |
+| IVR sim | http://localhost:5174/ivr |
+| Metrics | http://localhost:8080/api/v1/metrics |
+
+Default officer token: `officer-poc-token`.
+Demo persona: mobile `9876543210`, OTP `123456` (Lakshmi Devi).
 
 ### Backend (without Docker)
 
 ```bash
 cp .env.example .env
-cd backend
-python -m venv .venv
-source .venv/bin/activate
+cd backend && python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-# Start Postgres (or use Compose postgres service), then:
 alembic upgrade head
 uvicorn app.main:app --reload --port 8000
 ```
@@ -83,80 +144,38 @@ uvicorn app.main:app --reload --port 8000
 ### Frontend
 
 ```bash
-cd frontend
-npm install
-npm run dev
+cd frontend && npm install && npm run dev
 ```
 
-### Tests
+## Demo flow
+
+Follow the timed judge script: **[docs/DEMO_RUNBOOK.md](docs/DEMO_RUNBOOK.md)** (~8–10 minutes).
+
+Highlights: language → auth → consent → form → documents → fee/payment → receipt → officer action → cross-channel resume → payment/document failure recovery → boundary deny → metrics.
+
+Document placeholders: [docs/document-samples.md](docs/document-samples.md) (`config/samples/documents/`).
+
+## Testing
 
 ```bash
-cd backend
-pytest -q
-ruff check app tests
-```
-
-```bash
-cd frontend
-npm run typecheck
-npm run lint
-npm run build
-```
-
-## Docker commands
-
-```bash
-# Validate compose file
+cd backend && pytest -q && ruff check app tests
+cd frontend && npm run typecheck && npm run lint && npm run build
 docker compose config
-
-# Build and start (postgres + backend + frontend)
-docker compose up --build -d
-
-# Health / ready (host ports: backend 8080, frontend 5174)
-curl -s http://localhost:8080/api/v1/health
-curl -s http://localhost:8080/api/v1/ready
-
-# Citizen journey UI
-open http://localhost:5174/journey
-
-# Officer review (token default: officer-poc-token)
-open http://localhost:5174/officer
-
-# Channel simulators
-open http://localhost:5174/whatsapp
-open http://localhost:5174/ivr
-
-# Stop
-docker compose down
 ```
 
-Demo persona (synthetic): mobile `9876543210`, OTP `123456` (Lakshmi Devi).
-
-Payment simulation commands after fee quote: `PAY` (success), `FAIL` (retryable decline), `TIMEOUT` (park and retry). Document verification: upload a file whose name contains `mismatch` or `unreadable` to exercise rejection recovery.
-
-Postgres is reachable from the backend on the Compose network only (not published to the host by default). Host ports `8080` (API) and `5174` (UI) avoid common local conflicts with other projects.
-
-## Security / data classification summary
-
-- No secrets in git (`.env` ignored; use `.env.example`)
-- Fail-closed classification; `RESTRICTED` never allowed to cloud
-- Boundary allow/deny decisions audited; raw restricted content not stored in audit metadata
-- Structured logs redact passwords, tokens, API keys, OTPs, transcripts, and audio payloads
-- API errors never return stack traces to clients
-- CORS + basic security headers enabled
+Evidence summary: [docs/TEST_EVIDENCE.md](docs/TEST_EVIDENCE.md).
+Requirement mapping: [docs/REQUIREMENT_COVERAGE.md](docs/REQUIREMENT_COVERAGE.md).
 
 ## Repository layout
 
 ```
 backend/app/{api,core,boundary,channels,speech,nlu,platform,models,services,adapters}
 frontend/                 # React + Vite + TypeScript
-config/boundary/          # policies.yaml
-config/i18n/              # en / hi / te prompt bundles
-config/services/          # certificate service definitions
-docs/                     # architecture + ADRs
+config/boundary|i18n|services|seed|samples|providers
+docs/                     # architecture, diagrams, coverage, demo, limitations
 docker-compose.yml
 ```
 
-## Explicit statement
+## Explicit non-production statement
 
-This repository is a **hackathon proof-of-concept**. It prioritizes a demoable end-to-end journey, data sovereignty invariants, and a clean modular foundation over production-scale infrastructure.
+This repository is a **hackathon POC**. It prioritizes a demoable end-to-end journey, data-sovereignty invariants, modular clarity, and judge-ready evidence over production-scale infrastructure.
