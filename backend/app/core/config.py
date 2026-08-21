@@ -42,6 +42,12 @@ class Settings(BaseSettings):
         description="Local filesystem directory for uploaded documents",
     )
 
+    # POC officer RBAC token (header X-Officer-Token). Not a production secret store.
+    officer_api_token: str = Field(
+        default="officer-poc-token",
+        description="Shared token for officer dashboard APIs",
+    )
+
     # CORS
     cors_origins: str = Field(
         default="http://localhost:5173,http://localhost:5174,http://localhost:3000",

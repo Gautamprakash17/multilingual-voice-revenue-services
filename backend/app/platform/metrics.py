@@ -19,6 +19,14 @@ class MetricsStore:
     nlu_failure: int = 0
     channel_errors: int = 0
     escalations: int = 0
+    corrections: int = 0
+    payment_success: int = 0
+    payment_failure: int = 0
+    payment_timeout: int = 0
+    doc_verified: int = 0
+    doc_mismatch: int = 0
+    doc_unreadable: int = 0
+    status_counts: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     latencies_ms: list[float] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -52,6 +60,34 @@ class MetricsStore:
         with self._lock:
             self.escalations += 1
 
+    def record_correction(self) -> None:
+        with self._lock:
+            self.corrections += 1
+
+    def record_payment(self, outcome: str) -> None:
+        with self._lock:
+            key = outcome.upper()
+            if key == "SUCCESS":
+                self.payment_success += 1
+            elif key == "TIMEOUT":
+                self.payment_timeout += 1
+            else:
+                self.payment_failure += 1
+
+    def record_doc_verification(self, outcome: str) -> None:
+        with self._lock:
+            key = outcome.upper()
+            if key == "VERIFIED":
+                self.doc_verified += 1
+            elif key == "MISMATCH":
+                self.doc_mismatch += 1
+            elif key == "UNREADABLE":
+                self.doc_unreadable += 1
+
+    def record_status(self, status: str) -> None:
+        with self._lock:
+            self.status_counts[status] += 1
+
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             lats = sorted(self.latencies_ms)
@@ -66,6 +102,18 @@ class MetricsStore:
                 "nlu_failure": self.nlu_failure,
                 "channel_errors": self.channel_errors,
                 "escalations": self.escalations,
+                "corrections": self.corrections,
+                "payments": {
+                    "success": self.payment_success,
+                    "failure": self.payment_failure,
+                    "timeout": self.payment_timeout,
+                },
+                "document_verification": {
+                    "verified": self.doc_verified,
+                    "mismatch": self.doc_mismatch,
+                    "unreadable": self.doc_unreadable,
+                },
+                "status_distribution": dict(self.status_counts),
                 "latency_ms": {"count": len(lats), "avg": avg, "p50": p50},
             }
 

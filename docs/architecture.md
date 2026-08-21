@@ -12,17 +12,18 @@ Architecture for a multilingual, voice-first Revenue Department certificate plat
 - Data classification (`RESTRICTED` / `INTERNAL` / `PUBLIC_SAFE`) with fail-closed defaults
 - Data Boundary Gateway + declarative policy engine
 - Append-only audit trail and JSON structured logging
-- Income Certificate journey (state machine, mock OTP, consent, form, documents, review/submit)
+- Income Certificate journey (state machine, mock OTP, consent, form, documents, verification, fee/payment, receipt, review/submit)
 - Channel-agnostic message envelope with Web, WhatsApp simulator, and IVR simulator adapters
 - Multilingual prompts (English, Hindi, Telugu)
 - Local / mock STT, TTS, and rule-based NLU
 - Cross-channel session resume and lightweight operational metrics
-- React/Vite frontend (citizen journey + channel simulators)
+- Officer review dashboard (approve / reject / request correction / escalate)
+- React/Vite frontend (citizen journey, officer review, channel simulators)
 - Docker Compose local stack
 
 ### Planned / optional extensions
 
-Payment adapters, OCR/document verification, officer dashboard, production WhatsApp/telephony providers, richer on-prem speech models, and optional cloud AI strictly for approved `PUBLIC_SAFE` content.
+Production WhatsApp/telephony providers, richer on-prem speech models, additional catalogue services, and optional cloud AI strictly for approved `PUBLIC_SAFE` content.
 
 ## Trust zones
 
@@ -46,14 +47,14 @@ Restricted citizen text, voice, application data, and documents remain in Trust 
 
 | Module | Responsibility |
 |--------|----------------|
-| `app/api` | Versioned HTTP routes (health, journey, channels, metrics) |
+| `app/api` | Versioned HTTP routes (health, journey, channels, officer, metrics) |
 | `app/core` | Config, DB, security helpers |
 | `app/boundary` | Classification, policy, gateway, providers |
 | `app/channels` | Message envelope, adapters, orchestrator |
 | `app/speech` | Language detection, STT, TTS |
 | `app/nlu` | Local rule-based intent/slot extraction |
-| `app/services` | Journey engine, catalogue, validation, i18n, documents |
-| `app/adapters` | Mock identity and related integration interfaces |
+| `app/services` | Journey engine, catalogue, validation, i18n, documents, receipts, officer |
+| `app/adapters` | Mock identity, payment, OCR/document verification |
 | `app/platform` | Audit, logging, middleware, metrics |
 | `app/models` | ORM models |
 

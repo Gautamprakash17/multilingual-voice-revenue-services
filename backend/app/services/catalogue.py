@@ -29,6 +29,13 @@ class DocumentDef:
 
 
 @dataclass
+class FeeDef:
+    amount_paise: int
+    currency: str
+    description: str = ""
+
+
+@dataclass
 class ServiceDefinition:
     service_code: str
     display_name: str
@@ -37,6 +44,7 @@ class ServiceDefinition:
     fields: list[FieldDef]
     documents: list[DocumentDef]
     prompts: dict[str, str]
+    fee: FeeDef | None = None
 
     def field_by_name(self, name: str) -> FieldDef | None:
         return next((f for f in self.fields if f.name == name), None)
@@ -86,6 +94,14 @@ def load_service_definition(path: Path) -> ServiceDefinition:
         )
         for d in raw.get("documents", [])
     ]
+    fee_raw = raw.get("fee") or {}
+    fee = None
+    if fee_raw:
+        fee = FeeDef(
+            amount_paise=int(fee_raw.get("amount_paise", 0)),
+            currency=str(fee_raw.get("currency", "INR")),
+            description=str(fee_raw.get("description") or ""),
+        )
     return ServiceDefinition(
         service_code=raw["service_code"],
         display_name=raw.get("display_name", raw["service_code"]),
@@ -94,6 +110,7 @@ def load_service_definition(path: Path) -> ServiceDefinition:
         fields=fields,
         documents=documents,
         prompts=dict(raw.get("prompts") or {}),
+        fee=fee,
     )
 
 

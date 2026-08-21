@@ -92,12 +92,20 @@ documents:
       - image/png
     max_size_bytes: 5242880
 
+fee:
+  amount_paise: 5000
+  currency: INR
+  description: "Application processing fee for Income Certificate"
+
 prompts:
   language_select: "Please choose a language: en, hi, or te."
   consent: >
     I agree to provide my information for processing this certificate application.
     Reply YES to consent, or NO to decline.
   service_select: "Available service: Income Certificate. Reply INCOME_CERTIFICATE to continue."
-  review_intro: "Please review your application. Reply CONFIRM to submit, or CORRECT to change a field."
+  review_intro: "Please review your application. Reply CONFIRM to continue to fee payment, or CORRECT to change a field."
+  fee_quote: "Application fee is {amount} {currency}. Reply PAY to proceed, or CORRECT to edit."
+  payment_prompt: "Complete payment. Reply PAY for success, FAIL to simulate decline, or TIMEOUT to park."
+  payment_failed: "Payment did not succeed. Reply RETRY to try again, or PAY to pay now."
   escalate: "Your application has been escalated to an officer. Quote your application ID for follow-up."
   submitted: "Your Income Certificate application has been submitted."

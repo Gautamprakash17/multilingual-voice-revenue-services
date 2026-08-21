@@ -186,6 +186,75 @@ export async function fetchMetrics(): Promise<Record<string, unknown>> {
   return res.json() as Promise<Record<string, unknown>>;
 }
 
+export async function getReceipt(
+  applicationId: string,
+  token: string,
+): Promise<JourneyResponse> {
+  const res = await fetch(`${API_BASE}/api/v1/journey/${applicationId}/receipt`, {
+    headers: { "X-Session-Token": token },
+  });
+  return parseJourney(res);
+}
+
+export type OfficerApplication = {
+  application_id: string;
+  service_code: string;
+  journey_state: string;
+  processing_status: string;
+  language?: string | null;
+  escalated: boolean;
+  payment_completed: boolean;
+  payment_ref?: string | null;
+  correction_notes?: string | null;
+  documents: Array<Record<string, unknown>>;
+  fields_present: string[];
+  created_at?: string | null;
+};
+
+async function officerFetch(
+  path: string,
+  officerToken: string,
+  init?: RequestInit,
+): Promise<Response> {
+  return fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      "X-Officer-Token": officerToken,
+      ...(init?.headers || {}),
+    },
+  });
+}
+
+export async function fetchOfficerQueue(
+  officerToken: string,
+): Promise<OfficerApplication[]> {
+  const res = await officerFetch("/api/v1/officer/queue", officerToken);
+  if (!res.ok) {
+    const body = (await res.json()) as { error?: { message?: string } };
+    throw new Error(body.error?.message || `Officer queue failed (${res.status})`);
+  }
+  return res.json() as Promise<OfficerApplication[]>;
+}
+
+export async function officerAction(
+  officerToken: string,
+  applicationId: string,
+  action: "approve" | "reject" | "request-correction" | "escalate",
+  body?: { reason?: string; notes?: string; target_fields?: string[] },
+): Promise<OfficerApplication> {
+  const res = await officerFetch(
+    `/api/v1/officer/${applicationId}/${action}`,
+    officerToken,
+    { method: "POST", body: JSON.stringify(body || {}) },
+  );
+  if (!res.ok) {
+    const payload = (await res.json()) as { error?: { message?: string } };
+    throw new Error(payload.error?.message || `Officer action failed (${res.status})`);
+  }
+  return res.json() as Promise<OfficerApplication>;
+}
+
 /** Encode a POC voice marker understood by MockSTTProvider. */
 export function encodePocVoice(transcript: string): string {
   const bytes = new TextEncoder().encode(`POCSTT:${transcript}`);

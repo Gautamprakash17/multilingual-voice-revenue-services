@@ -13,11 +13,26 @@ class JourneyState(StrEnum):
     FORM_CAPTURE = "FORM_CAPTURE"
     DOCUMENT_CAPTURE = "DOCUMENT_CAPTURE"
     REVIEW_CONFIRM = "REVIEW_CONFIRM"
+    FEE_QUOTE = "FEE_QUOTE"
+    PAYMENT = "PAYMENT"
+    PAYMENT_FAILED = "PAYMENT_FAILED"
     SUBMITTED = "SUBMITTED"
     CORRECTION = "CORRECTION"
     ESCALATED = "ESCALATED"
     AUTH_FAILED = "AUTH_FAILED"
     DOCUMENT_REJECTED = "DOCUMENT_REJECTED"
+
+
+class ProcessingStatus(StrEnum):
+    """Post-submission processing lifecycle (officer-facing)."""
+
+    DRAFT = "DRAFT"
+    SUBMITTED = "SUBMITTED"
+    UNDER_REVIEW = "UNDER_REVIEW"
+    NEEDS_CORRECTION = "NEEDS_CORRECTION"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    ISSUED = "ISSUED"
 
 
 # Allowed directed edges. Invalid transitions are rejected.
@@ -42,6 +57,7 @@ ALLOWED_TRANSITIONS: dict[JourneyState, frozenset[JourneyState]] = {
             JourneyState.DOCUMENT_CAPTURE,
             JourneyState.CORRECTION,
             JourneyState.ESCALATED,
+            JourneyState.REVIEW_CONFIRM,
         }
     ),
     JourneyState.DOCUMENT_CAPTURE: frozenset(
@@ -56,16 +72,34 @@ ALLOWED_TRANSITIONS: dict[JourneyState, frozenset[JourneyState]] = {
     ),
     JourneyState.REVIEW_CONFIRM: frozenset(
         {
-            JourneyState.SUBMITTED,
+            JourneyState.FEE_QUOTE,
             JourneyState.CORRECTION,
+            JourneyState.ESCALATED,
+            # Re-submit after correction when payment already completed
+            JourneyState.SUBMITTED,
+        }
+    ),
+    JourneyState.FEE_QUOTE: frozenset(
+        {JourneyState.PAYMENT, JourneyState.CORRECTION, JourneyState.ESCALATED}
+    ),
+    JourneyState.PAYMENT: frozenset(
+        {
+            JourneyState.SUBMITTED,
+            JourneyState.PAYMENT_FAILED,
             JourneyState.ESCALATED,
         }
     ),
-    JourneyState.CORRECTION: frozenset(
-        {JourneyState.FORM_CAPTURE, JourneyState.ESCALATED}
+    JourneyState.PAYMENT_FAILED: frozenset(
+        {JourneyState.PAYMENT, JourneyState.FEE_QUOTE, JourneyState.ESCALATED}
     ),
-    JourneyState.SUBMITTED: frozenset(),
-    JourneyState.ESCALATED: frozenset(),
+    JourneyState.CORRECTION: frozenset(
+        {JourneyState.FORM_CAPTURE, JourneyState.DOCUMENT_CAPTURE, JourneyState.ESCALATED}
+    ),
+    # Officer-driven reopen for targeted correction after submission
+    JourneyState.SUBMITTED: frozenset({JourneyState.CORRECTION}),
+    JourneyState.ESCALATED: frozenset(
+        {JourneyState.REVIEW_CONFIRM, JourneyState.SUBMITTED}
+    ),
 }
 
 NORMAL_CONVERSATIONAL_STATES = frozenset(
@@ -77,6 +111,9 @@ NORMAL_CONVERSATIONAL_STATES = frozenset(
         JourneyState.FORM_CAPTURE,
         JourneyState.DOCUMENT_CAPTURE,
         JourneyState.REVIEW_CONFIRM,
+        JourneyState.FEE_QUOTE,
+        JourneyState.PAYMENT,
+        JourneyState.PAYMENT_FAILED,
         JourneyState.CORRECTION,
         JourneyState.AUTH_FAILED,
         JourneyState.DOCUMENT_REJECTED,

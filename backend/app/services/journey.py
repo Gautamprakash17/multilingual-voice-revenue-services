@@ -10,17 +10,21 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.adapters.identity import IdentityProvider, get_identity_provider
+from app.adapters.payment import PaymentOutcome, get_payment_provider
 from app.boundary.classification import Classification
 from app.boundary.gateway import DataBoundaryGateway, GatewayRequest
-from app.models.application import Application, ConversationSession
+from app.models.application import Application, ConversationSession, PaymentRecord
 from app.platform.audit import write_audit_event
+from app.platform.metrics import get_metrics
 from app.services.application_ids import generate_application_id
 from app.services.catalogue import ServiceDefinition, get_service
 from app.services.i18n import field_prompt as i18n_field_prompt
 from app.services.i18n import t as i18n_t
+from app.services.receipts import generate_receipt, latest_receipt
 from app.services.state_machine import (
     InvalidTransitionError,
     JourneyState,
+    ProcessingStatus,
     assert_transition,
     initial_state,
 )
@@ -136,8 +140,12 @@ class JourneyService:
         return None
 
     def _missing_documents(self, app: Application) -> list[str]:
-        present = {d.document_code for d in app.documents}
-        return [c for c in self.service.required_document_codes() if c not in present]
+        verified = {
+            d.document_code
+            for d in app.documents
+            if d.verification_status == "VERIFIED"
+        }
+        return [c for c in self.service.required_document_codes() if c not in verified]
 
     def _field_prompt(self, field_name: str, app: Application | None = None) -> str:
         lang = self._lang(app) if app else "en"
@@ -171,12 +179,16 @@ class JourneyService:
         app_ref = generate_application_id(self.db)
         token = secrets.token_urlsafe(24)
         state = initial_state()
+        fee = self.service.fee
         app = Application(
             application_id=app_ref,
             service_code=SERVICE_CODE,
             current_state=state.value,
+            processing_status=ProcessingStatus.DRAFT.value,
             classification=Classification.RESTRICTED.value,
             form_data={},
+            fee_amount_paise=fee.amount_paise if fee else 0,
+            fee_currency=fee.currency if fee else "INR",
         )
         session = ConversationSession(
             application=app,
@@ -283,6 +295,8 @@ class JourneyService:
                     event_type="ESCALATION_REQUESTED",
                     metadata={"application_ref": app.application_id},
                 )
+                app.escalated = True
+                get_metrics().record_escalation()
             return JourneyReply(
                 application_id=app.application_id,
                 state=app.current_state,
@@ -302,6 +316,9 @@ class JourneyService:
             JourneyState.DOCUMENT_CAPTURE: self._on_document_message,
             JourneyState.DOCUMENT_REJECTED: self._on_document_rejected_message,
             JourneyState.REVIEW_CONFIRM: self._on_review,
+            JourneyState.FEE_QUOTE: self._on_fee_quote,
+            JourneyState.PAYMENT: self._on_payment,
+            JourneyState.PAYMENT_FAILED: self._on_payment_failed,
             JourneyState.SUBMITTED: self._on_submitted,
             JourneyState.ESCALATED: self._on_escalated,
         }
@@ -554,6 +571,15 @@ class JourneyService:
 
         field_name = app.correcting_field or self._next_missing_field(app)
         if not field_name:
+            if not self._missing_documents(app):
+                self._transition(
+                    app,
+                    session,
+                    JourneyState.REVIEW_CONFIRM,
+                    trace_id=trace_id,
+                    event_type="REVIEW_STARTED",
+                )
+                return self._review_reply(app)
             # All fields present — move to documents
             self._transition(app, session, JourneyState.DOCUMENT_CAPTURE, trace_id=trace_id)
             missing = self._missing_documents(app)
@@ -734,6 +760,7 @@ class JourneyService:
                 trace_id=trace_id,
                 event_type="CORRECTION_REQUESTED",
             )
+            get_metrics().record_correction()
             return JourneyReply(
                 application_id=app.application_id,
                 state=app.current_state,
@@ -741,6 +768,210 @@ class JourneyService:
                 prompt=", ".join(self.service.required_field_names()),
             )
         if cmd == "CONFIRM":
+            if app.payment_completed:
+                return self._finalize_submission(app, session, trace_id=trace_id)
+            self._transition(
+                app,
+                session,
+                JourneyState.FEE_QUOTE,
+                trace_id=trace_id,
+                event_type="FEE_QUOTE_STARTED",
+                metadata={"application_ref": app.application_id},
+            )
+            return self._fee_quote_reply(app)
+        return self._review_reply(app, error="reply_CONFIRM_or_CORRECT")
+
+    def _fee_quote_reply(self, app: Application, error: str | None = None) -> JourneyReply:
+        amount = app.fee_amount_paise or 0
+        currency = app.fee_currency or "INR"
+        rupees = amount / 100
+        prompt_tpl = self.service.prompts.get(
+            "fee_quote",
+            "Application fee is {amount} {currency}. Reply PAY to proceed.",
+        )
+        message = prompt_tpl.format(amount=f"{rupees:.2f}", currency=currency)
+        return JourneyReply(
+            application_id=app.application_id,
+            state=app.current_state,
+            message=message,
+            prompt="Reply PAY to continue, or CORRECT to edit.",
+            error=error,
+            data={
+                "fee": {
+                    "amount_paise": amount,
+                    "currency": currency,
+                    "display": f"{rupees:.2f} {currency}",
+                }
+            },
+        )
+
+    def _on_fee_quote(
+        self, app: Application, session: ConversationSession, text: str, *, trace_id: str | None
+    ) -> JourneyReply:
+        cmd = text.strip().upper()
+        if cmd == "CORRECT":
+            self._transition(
+                app,
+                session,
+                JourneyState.CORRECTION,
+                trace_id=trace_id,
+                event_type="CORRECTION_REQUESTED",
+            )
+            get_metrics().record_correction()
+            return JourneyReply(
+                application_id=app.application_id,
+                state=app.current_state,
+                message="Which field do you want to correct?",
+                prompt=", ".join(self.service.required_field_names()),
+            )
+        if cmd in {"PAY", "YES", "CONFIRM", "OK"}:
+            self._transition(
+                app,
+                session,
+                JourneyState.PAYMENT,
+                trace_id=trace_id,
+                event_type="PAYMENT_STARTED",
+            )
+            return JourneyReply(
+                application_id=app.application_id,
+                state=app.current_state,
+                message=self.service.prompts.get(
+                    "payment_prompt",
+                    "Complete payment. Reply PAY, FAIL, or TIMEOUT.",
+                ),
+                prompt="Reply PAY / FAIL / TIMEOUT",
+                data={
+                    "fee": {
+                        "amount_paise": app.fee_amount_paise,
+                        "currency": app.fee_currency,
+                    }
+                },
+            )
+        return self._fee_quote_reply(app, error="reply_PAY_or_CORRECT")
+
+    def _on_payment(
+        self, app: Application, session: ConversationSession, text: str, *, trace_id: str | None
+    ) -> JourneyReply:
+        return self._attempt_payment(app, session, text, trace_id=trace_id)
+
+    def _on_payment_failed(
+        self, app: Application, session: ConversationSession, text: str, *, trace_id: str | None
+    ) -> JourneyReply:
+        cmd = text.strip().upper()
+        if cmd in {"RETRY", "PAY", "YES", "OK"}:
+            self._transition(app, session, JourneyState.PAYMENT, trace_id=trace_id)
+            return self._attempt_payment(
+                app,
+                session,
+                "PAY" if cmd == "RETRY" else cmd,
+                trace_id=trace_id,
+            )
+        return JourneyReply(
+            application_id=app.application_id,
+            state=app.current_state,
+            message=self.service.prompts.get(
+                "payment_failed",
+                "Payment did not succeed. Reply RETRY to try again.",
+            ),
+            prompt="Reply RETRY or PAY",
+        )
+
+    def _attempt_payment(
+        self,
+        app: Application,
+        session: ConversationSession,
+        text: str,
+        *,
+        trace_id: str | None,
+    ) -> JourneyReply:
+        amount = app.fee_amount_paise or 0
+        currency = app.fee_currency or "INR"
+        result = get_payment_provider().charge(
+            amount_paise=amount,
+            currency=currency,
+            application_ref=app.application_id,
+            scenario=text,
+        )
+        payment = PaymentRecord(
+            application_id=app.id,
+            amount_paise=amount,
+            currency=currency,
+            outcome=result.outcome.value,
+            payment_ref=result.payment_ref,
+            provider=result.provider,
+            reason=result.reason,
+            classification=Classification.INTERNAL.value,
+        )
+        self.db.add(payment)
+        self.db.flush()
+        get_metrics().record_payment(result.outcome.value)
+        self._audit(
+            "PAYMENT_ATTEMPT",
+            trace_id=trace_id,
+            actor_id=app.applicant_id,
+            metadata={
+                "application_ref": app.application_id,
+                "outcome": result.outcome.value,
+                "payment_ref": result.payment_ref,
+                "amount_paise": amount,
+                "provider": result.provider,
+            },
+        )
+
+        if result.outcome == PaymentOutcome.SUCCESS:
+            app.payment_completed = True
+            app.payment_ref = result.payment_ref
+            return self._finalize_submission(app, session, trace_id=trace_id)
+
+        if result.outcome == PaymentOutcome.TIMEOUT:
+            # Park safely in PAYMENT_FAILED without corrupting payment_completed
+            if JourneyState(app.current_state) != JourneyState.PAYMENT_FAILED:
+                self._transition(
+                    app,
+                    session,
+                    JourneyState.PAYMENT_FAILED,
+                    trace_id=trace_id,
+                    event_type="PAYMENT_TIMEOUT",
+                    metadata={"reason": result.reason},
+                )
+            return JourneyReply(
+                application_id=app.application_id,
+                state=app.current_state,
+                message=(
+                    "Payment timed out. Your application is parked safely. "
+                    "Reply RETRY to try again."
+                ),
+                prompt="Reply RETRY",
+                error="payment_timeout",
+                data={"recovery": "RETRY"},
+            )
+
+        if JourneyState(app.current_state) != JourneyState.PAYMENT_FAILED:
+            self._transition(
+                app,
+                session,
+                JourneyState.PAYMENT_FAILED,
+                trace_id=trace_id,
+                event_type="PAYMENT_FAILED",
+                metadata={"reason": result.reason},
+            )
+        return JourneyReply(
+            application_id=app.application_id,
+            state=app.current_state,
+            message="Payment failed. Reply RETRY to try again.",
+            prompt="Reply RETRY or PAY",
+            error="payment_failed",
+            data={"recovery": "RETRY"},
+        )
+
+    def _finalize_submission(
+        self,
+        app: Application,
+        session: ConversationSession,
+        *,
+        trace_id: str | None,
+    ) -> JourneyReply:
+        if JourneyState(app.current_state) != JourneyState.SUBMITTED:
             self._transition(
                 app,
                 session,
@@ -749,27 +980,41 @@ class JourneyService:
                 event_type="APPLICATION_SUBMITTED",
                 metadata={"application_ref": app.application_id},
             )
-            return JourneyReply(
-                application_id=app.application_id,
-                state=app.current_state,
-                message=self.service.prompts.get(
-                    "submitted", "Application submitted."
-                ),
-                data={
-                    "application_id": app.application_id,
-                    "status": "SUBMITTED",
-                },
-            )
-        return self._review_reply(app, error="reply_CONFIRM_or_CORRECT")
+        app.processing_status = ProcessingStatus.UNDER_REVIEW.value
+        app.correction_notes = None
+        receipt = generate_receipt(db=self.db, app=app, trace_id=trace_id)
+        get_metrics().record_status(app.processing_status)
+        return JourneyReply(
+            application_id=app.application_id,
+            state=app.current_state,
+            message=self.service.prompts.get("submitted", "Application submitted."),
+            data={
+                "application_id": app.application_id,
+                "status": app.processing_status,
+                "processing_status": app.processing_status,
+                "payment_ref": app.payment_ref,
+                "receipt_id": receipt.receipt_id,
+                "receipt": receipt.body_text,
+            },
+        )
 
     def _on_submitted(
         self, app: Application, session: ConversationSession, text: str, *, trace_id: str | None
     ) -> JourneyReply:
+        receipt = latest_receipt(self.db, app.id)
         return JourneyReply(
             application_id=app.application_id,
             state=app.current_state,
-            message="Application already submitted.",
-            data={"application_id": app.application_id, "status": "SUBMITTED"},
+            message="Application already submitted. You can check status anytime.",
+            data={
+                "application_id": app.application_id,
+                "status": app.processing_status,
+                "processing_status": app.processing_status,
+                "payment_ref": app.payment_ref,
+                "receipt_id": receipt.receipt_id if receipt else None,
+                "receipt": receipt.body_text if receipt else None,
+                "correction_notes": app.correction_notes,
+            },
         )
 
     def _on_escalated(
@@ -779,6 +1024,7 @@ class JourneyService:
             application_id=app.application_id,
             state=app.current_state,
             message=self.service.prompts.get("escalate", "Escalated."),
+            data={"processing_status": app.processing_status, "escalated": True},
         )
 
     def _review_reply(self, app: Application, error: str | None = None) -> JourneyReply:
@@ -789,6 +1035,7 @@ class JourneyService:
                 "mime_type": d.mime_type,
                 "size_bytes": d.size_bytes,
                 "checksum_sha256": d.checksum_sha256,
+                "verification_status": d.verification_status,
             }
             for d in app.documents
         ]
@@ -796,7 +1043,7 @@ class JourneyService:
             application_id=app.application_id,
             state=app.current_state,
             message=self.service.prompts.get("review_intro", "Please review."),
-            prompt="Reply CONFIRM to submit, or CORRECT to change a field.",
+            prompt="Reply CONFIRM to continue to fee payment, or CORRECT to change a field.",
             error=error,
             data={
                 "review": {
@@ -805,11 +1052,13 @@ class JourneyService:
                     "language": app.language,
                     "fields": dict(app.form_data or {}),
                     "documents": docs,
+                    "payment_completed": app.payment_completed,
                 }
             },
         )
 
     def _status_reply(self, app: Application, session: ConversationSession) -> JourneyReply:
+        receipt = latest_receipt(self.db, app.id)
         return JourneyReply(
             application_id=app.application_id,
             state=app.current_state,
@@ -819,9 +1068,24 @@ class JourneyService:
                 "service_code": app.service_code,
                 "consent_granted": app.consent_granted,
                 "fields_captured": list((app.form_data or {}).keys()),
-                "documents": [d.document_code for d in app.documents],
+                "documents": [
+                    {
+                        "code": d.document_code,
+                        "verification_status": d.verification_status,
+                    }
+                    for d in app.documents
+                ],
                 "channel": session.channel,
                 "classification": app.classification,
+                "processing_status": app.processing_status,
+                "payment_completed": app.payment_completed,
+                "payment_ref": app.payment_ref,
+                "fee_amount_paise": app.fee_amount_paise,
+                "fee_currency": app.fee_currency,
+                "escalated": app.escalated,
+                "correction_notes": app.correction_notes,
+                "receipt_id": receipt.receipt_id if receipt else None,
+                "receipt": receipt.body_text if receipt else None,
             },
         )
 
@@ -847,6 +1111,7 @@ class JourneyService:
             state=app.current_state,
             message=f"Document rejected: {reason}",
             prompt="Reply RETRY to upload again.",
+            data={"recovery": "RETRY", "reason": reason},
         )
 
     def after_document_upload(
@@ -854,14 +1119,53 @@ class JourneyService:
     ) -> JourneyReply:
         app = self._get_app_by_ref(application_id)
         session = self._get_session(app, access_token)
+        self.db.refresh(app)
         if JourneyState(app.current_state) == JourneyState.DOCUMENT_REJECTED:
             self._transition(app, session, JourneyState.DOCUMENT_CAPTURE, trace_id=trace_id)
+        # Any unverified docs keep capture open
+        bad = [
+            d
+            for d in app.documents
+            if (d.verification_status or "") != "VERIFIED"
+        ]
+        if bad:
+            # Prefer explicit mismatch/unreadable over pending uploads
+            failed = [
+                d
+                for d in bad
+                if d.verification_status in {"MISMATCH", "UNREADABLE"}
+            ]
+            target = failed[0] if failed else None
+            if target is not None:
+                if JourneyState(app.current_state) != JourneyState.DOCUMENT_REJECTED:
+                    self._transition(
+                        app,
+                        session,
+                        JourneyState.DOCUMENT_REJECTED,
+                        trace_id=trace_id,
+                        metadata={
+                            "document_code": target.document_code,
+                            "outcome": target.verification_status,
+                        },
+                    )
+                return JourneyReply(
+                    application_id=app.application_id,
+                    state=app.current_state,
+                    message=f"Document verification failed: {target.verification_reason}",
+                    prompt="Reply RETRY to re-upload.",
+                    error="document_verification_failed",
+                    data={
+                        "recovery": "RETRY",
+                        "document_code": target.document_code,
+                        "verification_status": target.verification_status,
+                    },
+                )
         missing = self._missing_documents(app)
         if missing:
             return JourneyReply(
                 application_id=app.application_id,
                 state=app.current_state,
-                message="Document stored locally.",
+                message="Document stored and verified locally.",
                 prompt=f"Next upload: {missing[0]}",
                 data={"missing_documents": missing},
             )
@@ -873,3 +1177,23 @@ class JourneyService:
             event_type="REVIEW_STARTED",
         )
         return self._review_reply(app)
+
+    def get_receipt(self, application_id: str, access_token: str) -> JourneyReply:
+        app = self._get_app_by_ref(application_id)
+        self._get_session(app, access_token)
+        receipt = latest_receipt(self.db, app.id)
+        if not receipt:
+            raise LookupError("Receipt not found")
+        return JourneyReply(
+            application_id=app.application_id,
+            state=app.current_state,
+            message="Receipt ready.",
+            data={
+                "receipt_id": receipt.receipt_id,
+                "receipt": receipt.body_text,
+                "payment_ref": receipt.payment_ref,
+                "status": receipt.status,
+                "amount_paise": receipt.amount_paise,
+                "currency": receipt.currency,
+            },
+        )

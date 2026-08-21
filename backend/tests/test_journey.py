@@ -260,8 +260,13 @@ async def test_correction_review_submission_and_audit(
     assert app.current_state == JourneyState.REVIEW_CONFIRM.value
 
     submitted = journey.handle_message(app_id, token, "CONFIRM", trace_id="full")
+    assert submitted.state == JourneyState.FEE_QUOTE.value
+    pay_start = journey.handle_message(app_id, token, "PAY", trace_id="full")
+    assert pay_start.state == JourneyState.PAYMENT.value
+    submitted = journey.handle_message(app_id, token, "PAY", trace_id="full")
     assert submitted.state == JourneyState.SUBMITTED.value
     assert submitted.application_id.startswith("INC-")
+    assert submitted.data.get("receipt_id")
 
     events = db_session.query(AuditEvent).all()
     types = {e.event_type for e in events}
@@ -275,7 +280,9 @@ async def test_correction_review_submission_and_audit(
         "FIELD_CAPTURED",
         "DOCUMENT_UPLOADED",
         "CORRECTION_REQUESTED",
+        "PAYMENT_ATTEMPT",
         "APPLICATION_SUBMITTED",
+        "RECEIPT_GENERATED",
     }:
         assert required in types, f"missing {required}"
 

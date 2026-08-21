@@ -352,7 +352,10 @@ async def test_p2_journey_auth_consent_docs_submit_still_work(
     }
     if review.state != JourneyState.REVIEW_CONFIRM.value:
         review = j.handle_message(app_id, token, "DONE", trace_id="p2")
-    submitted = j.handle_message(app_id, token, "CONFIRM", trace_id="p2")
+    fee = j.handle_message(app_id, token, "CONFIRM", trace_id="p2")
+    assert fee.state == JourneyState.FEE_QUOTE.value
+    j.handle_message(app_id, token, "PAY", trace_id="p2")
+    submitted = j.handle_message(app_id, token, "PAY", trace_id="p2")
     assert submitted.state == JourneyState.SUBMITTED.value
 
 

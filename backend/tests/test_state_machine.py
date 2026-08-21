@@ -21,7 +21,9 @@ def test_valid_happy_path_transitions():
         (JourneyState.SERVICE_SELECT, JourneyState.FORM_CAPTURE),
         (JourneyState.FORM_CAPTURE, JourneyState.DOCUMENT_CAPTURE),
         (JourneyState.DOCUMENT_CAPTURE, JourneyState.REVIEW_CONFIRM),
-        (JourneyState.REVIEW_CONFIRM, JourneyState.SUBMITTED),
+        (JourneyState.REVIEW_CONFIRM, JourneyState.FEE_QUOTE),
+        (JourneyState.FEE_QUOTE, JourneyState.PAYMENT),
+        (JourneyState.PAYMENT, JourneyState.SUBMITTED),
     ]
     for current, target in path:
         assert can_transition(current, target)
@@ -46,7 +48,12 @@ def test_recovery_transitions():
     assert can_transition(JourneyState.REVIEW_CONFIRM, JourneyState.CORRECTION)
     assert can_transition(JourneyState.CORRECTION, JourneyState.FORM_CAPTURE)
     assert can_transition(JourneyState.FORM_CAPTURE, JourneyState.ESCALATED)
+    assert can_transition(JourneyState.PAYMENT, JourneyState.PAYMENT_FAILED)
+    assert can_transition(JourneyState.PAYMENT_FAILED, JourneyState.PAYMENT)
 
 
-def test_submitted_is_terminal():
+def test_submitted_limits_outgoing_edges():
+    # Citizen chat remains closed except officer-driven correction reopen
+    assert can_transition(JourneyState.SUBMITTED, JourneyState.CORRECTION)
     assert not can_transition(JourneyState.SUBMITTED, JourneyState.FORM_CAPTURE)
+    assert not can_transition(JourneyState.SUBMITTED, JourneyState.PAYMENT)

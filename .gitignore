@@ -46,7 +46,7 @@ postgres_data/
 *.log
 logs/
 
-# Model weights (future P2)
-models/
+# Local ML weight downloads (not ORM models under backend/app/models)
+/ml_weights/
 *.bin
 *.gguf

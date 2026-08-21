@@ -21,6 +21,11 @@ A voice-first platform that guides citizens through certificate journeys (income
 | Consent handling | Explicit grant required before form capture |
 | Form capture and validation | Config-driven rules from service catalogue |
 | Document upload | Local storage, MIME/size/checksum, `RESTRICTED` |
+| Document OCR and verification | Deterministic local/mock adapters (`VERIFIED` / `MISMATCH` / `UNREADABLE`) |
+| Fee quote and payment | Mock payment provider (`SUCCESS` / `FAILURE` / `TIMEOUT`) with retry |
+| Receipt generation | Local plain-text receipt after successful payment/submit |
+| Officer review dashboard | Approve, reject, request correction, escalate with RBAC |
+| Post-submit processing status | Under review → correction / approved / rejected / issued |
 | Multilingual support | English, Hindi, Telugu (i18n prompt bundles) |
 | Channel-agnostic message envelope | Shared contract for all channels |
 | Web text and voice interaction | Push-to-talk / record-style voice for the POC |
@@ -36,9 +41,6 @@ A voice-first platform that guides citizens through certificate journeys (income
 
 | Extension | Notes |
 |-----------|--------|
-| Payment adapter | Mock or real treasury/UPI integration |
-| OCR and document verification | Local OCR + verification adapters |
-| Officer dashboard | Escalation queue and application review |
 | Richer local speech models | Higher-accuracy on-prem STT/TTS |
 | Production WhatsApp / telephony | Swap simulators for real channel providers |
 | Additional certificate journeys | Same engine; catalogue-driven definitions |
@@ -117,6 +119,9 @@ curl -s http://localhost:8080/api/v1/ready
 # Citizen journey UI
 open http://localhost:5174/journey
 
+# Officer review (token default: officer-poc-token)
+open http://localhost:5174/officer
+
 # Channel simulators
 open http://localhost:5174/whatsapp
 open http://localhost:5174/ivr
@@ -126,6 +131,8 @@ docker compose down
 ```
 
 Demo persona (synthetic): mobile `9876543210`, OTP `123456` (Lakshmi Devi).
+
+Payment simulation commands after fee quote: `PAY` (success), `FAIL` (retryable decline), `TIMEOUT` (park and retry). Document verification: upload a file whose name contains `mismatch` or `unreadable` to exercise rejection recovery.
 
 Postgres is reachable from the backend on the Compose network only (not published to the host by default). Host ports `8080` (API) and `5174` (UI) avoid common local conflicts with other projects.
 

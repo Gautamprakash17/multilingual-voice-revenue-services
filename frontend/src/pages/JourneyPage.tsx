@@ -70,6 +70,12 @@ export default function JourneyPage() {
       setReview(reviewData as Record<string, unknown>);
     }
     if (reply.state === "SUBMITTED") setReview(null);
+    if (typeof reply.data?.receipt === "string") {
+      setChat((prev) => [
+        ...prev,
+        { role: "system", text: `Receipt:\n${reply.data?.receipt as string}` },
+      ]);
+    }
     playAudio(reply.audio_b64, reply.audio_mime);
   }
 

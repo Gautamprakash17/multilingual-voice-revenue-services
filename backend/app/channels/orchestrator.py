@@ -363,6 +363,16 @@ class ChannelOrchestrator:
         elif state == JourneyState.REVIEW_CONFIRM.value:
             prompt = t("review_intro", lang)
             message = t("review_intro", lang)
+        elif state == JourneyState.FEE_QUOTE.value:
+            fee = (reply.data or {}).get("fee") or {}
+            prompt = reply.prompt or "Reply PAY to continue"
+            message = reply.message or f"Fee: {fee.get('display', '')}"
+        elif state == JourneyState.PAYMENT.value:
+            prompt = reply.prompt or "Reply PAY / FAIL / TIMEOUT"
+            message = reply.message or prompt
+        elif state == JourneyState.PAYMENT_FAILED.value:
+            prompt = reply.prompt or "Reply RETRY"
+            message = reply.message or "Payment failed. Reply RETRY."
         elif state == JourneyState.CORRECTION.value:
             prompt = t("correction_which", lang)
         elif state == JourneyState.SUBMITTED.value:
@@ -401,6 +411,12 @@ class ChannelOrchestrator:
             return t("document_prompt", lang)
         if state == JourneyState.REVIEW_CONFIRM:
             return t("review_intro", lang)
+        if state == JourneyState.FEE_QUOTE:
+            return "Reply PAY to continue to payment"
+        if state == JourneyState.PAYMENT:
+            return "Reply PAY / FAIL / TIMEOUT"
+        if state == JourneyState.PAYMENT_FAILED:
+            return "Reply RETRY"
         if state == JourneyState.SUBMITTED:
             return t("application_id_label", lang, application_id=app.application_id)
         return t("welcome", lang)

@@ -78,6 +78,24 @@ def get_journey(
     return _to_response(reply)
 
 
+@router.get("/{application_id}/receipt", response_model=JourneyResponse)
+def get_receipt(
+    application_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    x_session_token: str | None = Header(default=None),
+) -> JourneyResponse:
+    token = _require_token(x_session_token)
+    service = JourneyService(db)
+    try:
+        reply = service.get_receipt(application_id, token)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Access denied") from None
+    return _to_response(reply)
+
+
 @router.post("/{application_id}/message", response_model=JourneyResponse)
 def post_message(
     application_id: str,
@@ -164,10 +182,11 @@ async def upload_document(
     request: Request,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    gateway: DataBoundaryGateway = Depends(get_gateway),
     x_session_token: str | None = Header(default=None),
 ) -> JourneyResponse:
     token = _require_token(x_session_token)
-    service = JourneyService(db)
+    service = JourneyService(db, gateway=gateway)
     try:
         app = service._get_app_by_ref(application_id)
         session = service._get_session(app, token)
@@ -176,7 +195,7 @@ async def upload_document(
     except PermissionError:
         raise HTTPException(status_code=403, detail="Access denied") from None
 
-    if app.current_state not in {"DOCUMENT_CAPTURE", "DOCUMENT_REJECTED"}:
+    if app.current_state not in {"DOCUMENT_CAPTURE", "DOCUMENT_REJECTED", "CORRECTION"}:
         raise HTTPException(
             status_code=409,
             detail=f"Documents cannot be uploaded in state {app.current_state}",
@@ -195,8 +214,9 @@ async def upload_document(
             upload=file,
             actor_id=app.applicant_id,
             trace_id=_trace(request),
+            form_data=dict(app.form_data or {}),
+            gateway=gateway,
         )
-        # Refresh relationship
         db.refresh(app)
         reply = service.after_document_upload(
             application_id, session.access_token, trace_id=_trace(request)
@@ -205,7 +225,6 @@ async def upload_document(
     except DocumentValidationError as exc:
         db.rollback()
         try:
-            # Re-load after rollback
             svc = JourneyService(db)
             app2 = svc._get_app_by_ref(application_id)
             if app2.current_state == "DOCUMENT_CAPTURE":

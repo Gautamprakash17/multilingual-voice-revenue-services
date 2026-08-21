@@ -2,6 +2,7 @@ import { NavLink, Route, Routes } from "react-router-dom";
 import HealthPage from "./pages/HealthPage";
 import IVRSimulatorPage from "./pages/IVRSimulatorPage";
 import JourneyPage from "./pages/JourneyPage";
+import OfficerPage from "./pages/OfficerPage";
 import PlaceholdersPage from "./pages/PlaceholdersPage";
 import WhatsAppSimulatorPage from "./pages/WhatsAppSimulatorPage";
 
@@ -21,6 +22,7 @@ export default function App() {
             Health
           </NavLink>
           <NavLink to="/journey">Apply</NavLink>
+          <NavLink to="/officer">Officer</NavLink>
           <NavLink to="/whatsapp">WhatsApp Sim</NavLink>
           <NavLink to="/ivr">IVR Sim</NavLink>
           <NavLink to="/placeholders">Surfaces</NavLink>
@@ -30,6 +32,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<HealthPage />} />
           <Route path="/journey" element={<JourneyPage />} />
+          <Route path="/officer" element={<OfficerPage />} />
           <Route path="/whatsapp" element={<WhatsAppSimulatorPage />} />
           <Route path="/ivr" element={<IVRSimulatorPage />} />
           <Route path="/placeholders" element={<PlaceholdersPage />} />
