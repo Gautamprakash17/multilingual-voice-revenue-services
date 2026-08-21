@@ -1,0 +1,103 @@
+service_code: INCOME_CERTIFICATE
+display_name: Income Certificate
+description: >
+  Apply for an Income Certificate through a guided conversational journey.
+  POC service definition — rules are declarative and executed by the validation engine.
+
+languages:
+  - en
+  - hi
+  - te
+
+fields:
+  - name: applicant_name
+    type: string
+    required: true
+    prompt: "What is your full name?"
+    validation:
+      min_length: 2
+      max_length: 120
+
+  - name: date_of_birth
+    type: date
+    required: true
+    prompt: "What is your date of birth? (DD/MM/YYYY)"
+    validation:
+      format: "%d/%m/%Y"
+
+  - name: mobile_number
+    type: mobile
+    required: true
+    prompt: "What is your mobile number? (10 digits)"
+    validation:
+      pattern: "^[6-9]\\d{9}$"
+
+  - name: address
+    type: string
+    required: true
+    prompt: "What is your residential address?"
+    validation:
+      min_length: 5
+      max_length: 300
+
+  - name: district
+    type: string
+    required: true
+    prompt: "Which district do you live in?"
+    validation:
+      min_length: 2
+      max_length: 80
+
+  - name: annual_income
+    type: number
+    required: true
+    prompt: "What is your annual income in INR? (numbers only)"
+    validation:
+      min: 0
+      max: 100000000
+
+  - name: income_source
+    type: string
+    required: true
+    prompt: "What is your primary source of income?"
+    validation:
+      min_length: 2
+      max_length: 120
+
+documents:
+  - code: IDENTITY_PROOF
+    required: true
+    label: Identity proof
+    allowed_mime_types:
+      - application/pdf
+      - image/jpeg
+      - image/png
+    max_size_bytes: 5242880
+
+  - code: ADDRESS_PROOF
+    required: true
+    label: Address proof
+    allowed_mime_types:
+      - application/pdf
+      - image/jpeg
+      - image/png
+    max_size_bytes: 5242880
+
+  - code: INCOME_PROOF
+    required: true
+    label: Income proof
+    allowed_mime_types:
+      - application/pdf
+      - image/jpeg
+      - image/png
+    max_size_bytes: 5242880
+
+prompts:
+  language_select: "Please choose a language: en, hi, or te."
+  consent: >
+    I agree to provide my information for processing this certificate application.
+    Reply YES to consent, or NO to decline.
+  service_select: "Available service: Income Certificate. Reply INCOME_CERTIFICATE to continue."
+  review_intro: "Please review your application. Reply CONFIRM to submit, or CORRECT to change a field."
+  escalate: "Your application has been escalated to an officer. Quote your application ID for follow-up."
+  submitted: "Your Income Certificate application has been submitted."

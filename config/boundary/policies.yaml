@@ -1,0 +1,28 @@
+# Boundary policy — declarative, fail-closed.
+# RESTRICTED and INTERNAL must never egress to cloud.
+# PUBLIC_SAFE may egress only with explicit approval and an allowed purpose.
+
+version: "1"
+
+classifications:
+  RESTRICTED:
+    cloud:
+      action: DENY
+      description: "Citizen/government mock data never leaves the local trust zone."
+
+  INTERNAL:
+    cloud:
+      action: DENY
+      description: "Operational data stays local by default."
+
+  PUBLIC_SAFE:
+    cloud:
+      action: ALLOW
+      requires_approval: true
+      allowed_purposes:
+        - synthetic_help
+        - language_warmup
+        - approved_demo_phrase
+      description: >
+        Non-sensitive content may reach cloud providers only when explicitly
+        approved and the purpose is on the allowlist.

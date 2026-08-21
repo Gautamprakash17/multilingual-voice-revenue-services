@@ -1,0 +1,24 @@
+# Provider configuration — P1 foundation.
+# Cloud AI is optional and disabled by default.
+# No OpenAI (or other cloud) dependency is required for P1.
+
+version: "1"
+
+default_mode: local
+
+providers:
+  stt:
+    local: faster-whisper  # planned for P2; not wired in P1
+    cloud: null            # optional; gated by Data Boundary Gateway
+  tts:
+    local: pre-recorded    # planned for P2
+    cloud: null
+  nlu:
+    local: rules           # planned for P2
+    cloud: null
+
+cloud_ai:
+  enabled: false
+  # OpenAI is OPTIONAL and not configured in P1.
+  # openai:
+  #   api_key: "${OPENAI_API_KEY}"  # never commit real keys
