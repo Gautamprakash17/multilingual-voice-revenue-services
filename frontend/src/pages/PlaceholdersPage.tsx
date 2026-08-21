@@ -1,15 +1,15 @@
 const SURFACES = [
   {
     title: "Citizen",
-    blurb: "Voice + text certificate journey (planned for later phases).",
+    blurb: "Voice + text certificate journey on the Apply page.",
   },
   {
     title: "Channel Simulator",
-    blurb: "WhatsApp / IVR simulators behind realistic adapters (P2+).",
+    blurb: "WhatsApp and IVR simulators behind realistic adapters.",
   },
   {
     title: "Officer Dashboard",
-    blurb: "Applications, escalations, boundary audit (P2+).",
+    blurb: "Applications, escalations, and boundary audit — planned extension.",
   },
 ];
 
@@ -18,14 +18,16 @@ export default function PlaceholdersPage() {
     <section className="panel">
       <h1>Application surfaces</h1>
       <p className="lede">
-        Placeholder sections only. No business functionality in P1.
+        Overview of product surfaces. Officer tooling remains an optional extension.
       </p>
       <div className="grid three">
         {SURFACES.map((surface) => (
           <article key={surface.title} className="card placeholder">
             <h2>{surface.title}</h2>
             <p>{surface.blurb}</p>
-            <span className="chip">Coming later</span>
+            <span className="chip">
+              {surface.title === "Officer Dashboard" ? "Planned" : "Available"}
+            </span>
           </article>
         ))}
       </div>

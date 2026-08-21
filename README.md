@@ -4,27 +4,54 @@
 
 ## Project purpose
 
-Engineer a foundation for a voice-first platform that will later guide citizens through certificate journeys (income, domicile, caste, etc.) across web, WhatsApp, and IVR — while proving that restricted data never leaves the local trust zone.
+A voice-first platform that guides citizens through certificate journeys (income and related catalogue services) across web, WhatsApp, and IVR channels, while proving that restricted mock citizen and government-like data never leaves the local trust zone.
 
-## POC scope (current phase = P3)
+## Current POC Scope
 
-| In P1–P3 | Later (P4+) |
-|----------|-------------|
-| Income Certificate journey | Payment adapters |
-| Channel-agnostic MessageEnvelope | Real WhatsApp / telephony |
-| Web + WhatsApp/IVR **simulators** | OCR / doc verification |
-| en / hi / te i18n prompts | Officer dashboard |
-| Local STT/NLU/TTS (mock or optional whisper) | OpenAI / cloud AI |
-| Cross-channel resume | Full analytics stack |
+### Implemented Capabilities
 
-OpenAI / cloud AI is **optional** and **not used**.
+| Capability | Notes |
+|------------|--------|
+| FastAPI backend and health/readiness | `/api/v1/health`, `/api/v1/ready` |
+| Data classification and Data Boundary Gateway | Fail-closed `RESTRICTED` / `INTERNAL` / `PUBLIC_SAFE` |
+| PostgreSQL and Alembic | Application, session, document, and audit schema |
+| Append-only audit logging | Safe metadata only; no raw restricted payloads |
+| Income Certificate application journey | Deterministic conversation state machine |
+| Mock OTP authentication | Seeded synthetic personas only |
+| Consent handling | Explicit grant required before form capture |
+| Form capture and validation | Config-driven rules from service catalogue |
+| Document upload | Local storage, MIME/size/checksum, `RESTRICTED` |
+| Multilingual support | English, Hindi, Telugu (i18n prompt bundles) |
+| Channel-agnostic message envelope | Shared contract for all channels |
+| Web text and voice interaction | Push-to-talk / record-style voice for the POC |
+| WhatsApp simulator | Realistic adapter UI; not real WhatsApp |
+| IVR simulator | DTMF + simulated speech; not real telephony |
+| Local / mock STT and TTS | Optional faster-whisper if installed; mock default |
+| Local rule-based NLU | Deterministic intent/slot extraction; no external LLM |
+| Cross-channel session resume | Continue an application across channels |
+| Operational metrics | Lightweight in-process metrics API |
+| Docker Compose deployment | Reproducible local stack |
+
+### Planned / Optional Extensions
+
+| Extension | Notes |
+|-----------|--------|
+| Payment adapter | Mock or real treasury/UPI integration |
+| OCR and document verification | Local OCR + verification adapters |
+| Officer dashboard | Escalation queue and application review |
+| Richer local speech models | Higher-accuracy on-prem STT/TTS |
+| Production WhatsApp / telephony | Swap simulators for real channel providers |
+| Additional certificate journeys | Same engine; catalogue-driven definitions |
+| Optional cloud AI | Only for approved `PUBLIC_SAFE` content via the gateway |
+
+Cloud AI is optional. The current implementation uses local processing for restricted data and does not require external AI services.
 
 ## Architecture summary
 
 Modular monolith:
 
-- **Trust Zone A (local):** API, boundary gateway, Postgres, audit, local providers
-- **Trust Zone B (optional cloud):** stub only in P1; real calls gated later by policy
+- **Trust Zone A (local):** API, channel adapters, orchestrator, boundary gateway, Postgres, audit, local STT/NLU/TTS providers
+- **Trust Zone B (optional cloud):** Provider stubs only; egress is policy-gated. Restricted data is never sent to public cloud
 
 Classifications: `RESTRICTED` · `INTERNAL` · `PUBLIC_SAFE` (fail-closed → `RESTRICTED`).
 
@@ -87,8 +114,12 @@ docker compose up --build -d
 curl -s http://localhost:8080/api/v1/health
 curl -s http://localhost:8080/api/v1/ready
 
-# Frontend
+# Citizen journey UI
 open http://localhost:5174/journey
+
+# Channel simulators
+open http://localhost:5174/whatsapp
+open http://localhost:5174/ivr
 
 # Stop
 docker compose down
@@ -103,20 +134,22 @@ Postgres is reachable from the backend on the Compose network only (not publishe
 - No secrets in git (`.env` ignored; use `.env.example`)
 - Fail-closed classification; `RESTRICTED` never allowed to cloud
 - Boundary allow/deny decisions audited; raw restricted content not stored in audit metadata
-- Structured logs redact passwords, tokens, API keys, OTPs
+- Structured logs redact passwords, tokens, API keys, OTPs, transcripts, and audio payloads
 - API errors never return stack traces to clients
 - CORS + basic security headers enabled
 
 ## Repository layout
 
 ```
-backend/app/{api,core,boundary,platform,models}
+backend/app/{api,core,boundary,channels,speech,nlu,platform,models,services,adapters}
 frontend/                 # React + Vite + TypeScript
 config/boundary/          # policies.yaml
+config/i18n/              # en / hi / te prompt bundles
+config/services/          # certificate service definitions
 docs/                     # architecture + ADRs
 docker-compose.yml
 ```
 
 ## Explicit statement
 
-This repository is a **hackathon proof-of-concept**. It prioritizes demoable sovereignty invariants and a clean foundation over production-scale infrastructure.
+This repository is a **hackathon proof-of-concept**. It prioritizes a demoable end-to-end journey, data sovereignty invariants, and a clean modular foundation over production-scale infrastructure.

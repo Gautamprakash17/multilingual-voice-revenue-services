@@ -13,7 +13,7 @@ export default function App() {
           <span className="brand-mark">RV</span>
           <div>
             <strong>Revenue Voice Services</strong>
-            <p>Hackathon POC — P3 Multilingual Voice</p>
+            <p>Hackathon POC — Multilingual Voice</p>
           </div>
         </div>
         <nav>

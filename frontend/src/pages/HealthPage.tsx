@@ -38,7 +38,7 @@ export default function HealthPage() {
     <section className="panel">
       <h1>Platform health</h1>
       <p className="lede">
-        P1 foundation connectivity check. Business journeys are not implemented yet.
+        Platform connectivity check for the local API and database.
       </p>
 
       {loading && <p className="muted">Checking API…</p>}

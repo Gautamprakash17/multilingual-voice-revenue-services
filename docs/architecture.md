@@ -1,47 +1,60 @@
-# Architecture — P1 Foundation
+# Architecture — Multilingual Voice-First Revenue Services Platform
 
-**Status:** Hackathon POC foundation (Phase P1)  
+**Status:** Hackathon POC — current implementation  
 **Style:** Modular monolith (not microservices)
 
 ## Purpose
 
-Foundation for a multilingual voice-first Revenue Department certificate platform. P1 delivers:
+Architecture for a multilingual, voice-first Revenue Department certificate platform. The current POC implements:
 
-- FastAPI application skeleton with `/api/v1/health` and `/api/v1/ready`
+- FastAPI application with `/api/v1/health`, `/api/v1/ready`, journey and channel APIs
 - PostgreSQL + SQLAlchemy + Alembic
 - Data classification (`RESTRICTED` / `INTERNAL` / `PUBLIC_SAFE`) with fail-closed defaults
 - Data Boundary Gateway + declarative policy engine
-- Append-only audit trail
-- JSON structured logging with request correlation
-- React/Vite frontend shell (health + placeholders)
+- Append-only audit trail and JSON structured logging
+- Income Certificate journey (state machine, mock OTP, consent, form, documents, review/submit)
+- Channel-agnostic message envelope with Web, WhatsApp simulator, and IVR simulator adapters
+- Multilingual prompts (English, Hindi, Telugu)
+- Local / mock STT, TTS, and rule-based NLU
+- Cross-channel session resume and lightweight operational metrics
+- React/Vite frontend (citizen journey + channel simulators)
 - Docker Compose local stack
 
-**Not in P1:** certificate journeys, voice, WhatsApp/IVR, payments, OCR, multilingual UI.
+### Planned / optional extensions
+
+Payment adapters, OCR/document verification, officer dashboard, production WhatsApp/telephony providers, richer on-prem speech models, and optional cloud AI strictly for approved `PUBLIC_SAFE` content.
 
 ## Trust zones
 
 ```
 ┌─────────────────────────────────────────────┐
 │ Trust Zone A — Local / On-prem              │
-│  Channels (later) → Orchestrator (later)    │
+│  Channels → Orchestrator → Journey engine   │
 │  Boundary Gateway (policy + audit)          │
-│  Local providers · Postgres · Audit         │
+│  Local STT / NLU / TTS · Postgres · Audit   │
 └──────────────────────┬──────────────────────┘
                        │ only PUBLIC_SAFE + approved
 ═══════════════════════╪═══════════════════════
                        ▼
               Trust Zone B — optional cloud
-              (stub only in P1; no real calls)
+              (stubs only; no unrestricted calls)
 ```
+
+Restricted citizen text, voice, application data, and documents remain in Trust Zone A. The gateway is the sole egress decision point.
 
 ## Module map
 
 | Module | Responsibility |
 |--------|----------------|
-| `app/api` | Versioned HTTP routes |
+| `app/api` | Versioned HTTP routes (health, journey, channels, metrics) |
 | `app/core` | Config, DB, security helpers |
 | `app/boundary` | Classification, policy, gateway, providers |
-| `app/platform` | Audit, logging, middleware |
+| `app/channels` | Message envelope, adapters, orchestrator |
+| `app/speech` | Language detection, STT, TTS |
+| `app/nlu` | Local rule-based intent/slot extraction |
+| `app/services` | Journey engine, catalogue, validation, i18n, documents |
+| `app/adapters` | Mock identity and related integration interfaces |
+| `app/platform` | Audit, logging, middleware, metrics |
 | `app/models` | ORM models |
 
 ## Configuration

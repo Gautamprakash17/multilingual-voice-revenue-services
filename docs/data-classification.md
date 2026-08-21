@@ -24,7 +24,7 @@ This document is a mandatory POC deliverable: **mock government/citizen data sta
 - Policy file: `config/boundary/policies.yaml`
 - Gateway: `backend/app/boundary/gateway.py` — sole decision point
 - Audit: every allow/deny is recorded; **raw restricted payloads are never stored** in audit metadata (keys/counts only)
-- Cloud provider in P1 is a **stub** that makes **zero external HTTP calls**
+- Cloud provider implementations in the current POC are **stubs** that make **zero external HTTP calls**
 
 ## Proof for judges
 

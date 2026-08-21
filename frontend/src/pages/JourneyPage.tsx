@@ -220,7 +220,7 @@ export default function JourneyPage() {
         <div>
           <h1>Income Certificate</h1>
           <p className="lede">
-            Voice + text web journey (P3). Languages: en / hi / te. Restricted data stays local.
+            Voice + text web journey. Languages: en / hi / te. Restricted data stays local.
           </p>
         </div>
         <div className="journey-meta">
