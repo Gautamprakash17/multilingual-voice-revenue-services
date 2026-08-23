@@ -7,7 +7,31 @@ description: >
 languages:
   - en
   - hi
-  - te
+  - kn
+
+selection:
+  display_names:
+    hi: आय प्रमाणपत्र
+    kn: ಆದಾಯ ಪ್ರಮಾಣಪತ್ರ
+  aliases:
+    en:
+      - income certificate
+    hi:
+      - आय प्रमाण पत्र
+      - आय प्रमाणपत्र
+    kn:
+      - ಆದಾಯ ಪ್ರಮಾಣ ಪತ್ರ
+      - ಆದಾಯ ಪ್ರಮಾಣಪತ್ರ
+  spoken_phrases:
+    en:
+      - apply for income certificate
+      - I want an income certificate
+      - I would like to apply for an income certificate
+    hi:
+      - आय प्रमाण पत्र के लिए आवेदन करना है
+      - मैं आय प्रमाण पत्र के लिए आवेदन करना चाहता हूँ
+    kn:
+      - ಆದಾಯ ಪ್ರಮಾಣ ಪತ್ರಕ್ಕೆ ಅರ್ಜಿ ಸಲ್ಲಿಸಬೇಕು
 
 fields:
   - name: applicant_name
@@ -98,14 +122,14 @@ fee:
   description: "Application processing fee for Income Certificate"
 
 prompts:
-  language_select: "Please choose a language: en, hi, or te."
+  language_select: "Please choose a language: en, hi, or kn."
   consent: >
     I agree to provide my information for processing this certificate application.
-    Reply YES to consent, or NO to decline.
-  service_select: "Available service: Income Certificate. Reply INCOME_CERTIFICATE to continue."
-  review_intro: "Please review your application. Reply CONFIRM to continue to fee payment, or CORRECT to change a field."
-  fee_quote: "Application fee is {amount} {currency}. Reply PAY to proceed, or CORRECT to edit."
-  payment_prompt: "Complete payment. Reply PAY for success, FAIL to simulate decline, or TIMEOUT to park."
-  payment_failed: "Payment did not succeed. Reply RETRY to try again, or PAY to pay now."
+    Please say yes to continue or no to decline.
+  service_select: "Available service: Income Certificate. Say Income Certificate to continue, or choose it on screen."
+  review_intro: "Please review your application. Say yes to continue to payment, or say change to edit a detail."
+  fee_quote: "The application fee is {amount} {currency}. Say yes to pay now, or say change to edit your details."
+  payment_prompt: "Please confirm the payment. Say yes to complete the payment, or say cancel to go back."
+  payment_failed: "The payment did not go through. Say yes to try again, or say cancel to go back."
   escalate: "Your application has been escalated to an officer. Quote your application ID for follow-up."
   submitted: "Your Income Certificate application has been submitted."

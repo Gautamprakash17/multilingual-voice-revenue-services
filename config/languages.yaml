@@ -1,0 +1,57 @@
+# Single source of truth for supported application languages.
+default: en
+
+script_ranges:
+  devanagari:
+    code: hi
+    start: 0x0900
+    end: 0x097F
+  kannada:
+    code: kn
+    start: 0x0C80
+    end: 0x0CFF
+
+languages:
+  en:
+    display_name: English
+    native_name: English
+    stt_code: en
+    tts_code: en
+    script: latin
+    aliases:
+      - en
+      - english
+      - eng
+    spoken_phrases:
+      - english please
+      - i would like to go with english
+      - i want english
+  hi:
+    display_name: Hindi
+    native_name: "हिन्दी"
+    stt_code: hi
+    tts_code: hi
+    script: devanagari
+    aliases:
+      - hi
+      - hindi
+      - "हिन्दी"
+      - "हिंदी"
+    spoken_phrases:
+      - hindi please
+      - i would like to go with hindi
+      - "हिंदी में बात करें"
+  kn:
+    display_name: Kannada
+    native_name: "ಕನ್ನಡ"
+    stt_code: kn
+    tts_code: kn
+    script: kannada
+    aliases:
+      - kn
+      - kannada
+      - "ಕನ್ನಡ"
+    spoken_phrases:
+      - kannada please
+      - i would like to go with kannada
+      - "ಕನ್ನಡದಲ್ಲಿ ಮಾತನಾಡಿ"

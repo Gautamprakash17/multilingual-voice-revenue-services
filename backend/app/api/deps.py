@@ -1,4 +1,4 @@
-"""Shared FastAPI dependencies (P1 stubs)."""
+"""Shared FastAPI dependencies."""
 
 from collections.abc import Generator
 from functools import lru_cache

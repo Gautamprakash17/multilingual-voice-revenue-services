@@ -111,7 +111,8 @@ class DataBoundaryGateway:
             provider = (
                 self.cloud_provider if destination == "cloud" else self.local_provider
             )
-            # Pass only key names / non-sensitive echo — providers in P1 are stubs
+            # Pass only key names / non-sensitive echo — cloud/local stubs never
+            # receive raw restricted payloads over the network.
             safe_payload = {"keys": sorted(request.payload.keys())}
             provider_result = provider.process(safe_payload, purpose)
 

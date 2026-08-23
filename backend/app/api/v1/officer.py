@@ -38,6 +38,18 @@ class OfficerApplicationResponse(BaseModel):
     created_at: str | None = None
 
 
+class OfficerHistoryItemResponse(BaseModel):
+    application_id: str
+    service_code: str
+    service_display_name: str
+    processing_status: str
+    journey_state: str
+    last_action: str
+    last_action_label: str
+    action_at: str
+    escalated: bool = False
+
+
 def _trace(request: Request) -> str | None:
     return getattr(request.state, "trace_id", None)
 
@@ -66,6 +78,20 @@ def _to_resp(view) -> OfficerApplicationResponse:
     )
 
 
+def _to_history(item) -> OfficerHistoryItemResponse:
+    return OfficerHistoryItemResponse(
+        application_id=item.application_id,
+        service_code=item.service_code,
+        service_display_name=item.service_display_name,
+        processing_status=item.processing_status,
+        journey_state=item.journey_state,
+        last_action=item.last_action,
+        last_action_label=item.last_action_label,
+        action_at=item.action_at,
+        escalated=item.escalated,
+    )
+
+
 @router.get("/queue", response_model=list[OfficerApplicationResponse])
 def list_queue(
     db: Session = Depends(get_db),
@@ -73,6 +99,31 @@ def list_queue(
 ) -> list[OfficerApplicationResponse]:
     _ = actor_id
     return [_to_resp(v) for v in OfficerService(db).list_queue()]
+
+
+@router.get("/history", response_model=list[OfficerHistoryItemResponse])
+def list_history(
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    actor_id: str = Depends(_officer),
+) -> list[OfficerHistoryItemResponse]:
+    """Completed officer actions from the append-only audit trail."""
+    _ = actor_id
+    return [_to_history(item) for item in OfficerService(db).list_history(limit=limit)]
+
+
+@router.get("/{application_id}", response_model=OfficerApplicationResponse)
+def get_application(
+    application_id: str,
+    db: Session = Depends(get_db),
+    actor_id: str = Depends(_officer),
+) -> OfficerApplicationResponse:
+    """Application detail for queue or history selection."""
+    _ = actor_id
+    try:
+        return _to_resp(OfficerService(db).get_application(application_id))
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Application not found") from None
 
 
 @router.post("/{application_id}/approve", response_model=OfficerApplicationResponse)

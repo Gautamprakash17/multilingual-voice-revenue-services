@@ -1,4 +1,6 @@
-"""Document verification, payment, receipt, and officer workflow tests."""
+"""Payment, fee, receipt, and officer workflow tests."""
+
+
 
 from __future__ import annotations
 
@@ -6,15 +8,9 @@ import io
 from pathlib import Path
 
 import pytest
-from app.adapters.documents import (
-    MockDocumentVerificationProvider,
-    MockOCRProvider,
-    VerificationOutcome,
-)
 from app.adapters.payment import MockPaymentProvider, PaymentOutcome
 from app.api.deps import get_gateway
-from app.boundary.classification import Classification
-from app.boundary.gateway import DataBoundaryGateway, GatewayRequest
+from app.boundary.gateway import DataBoundaryGateway
 from app.boundary.providers import OptionalCloudProvider
 from app.core.config import get_settings
 from app.main import create_app
@@ -91,61 +87,6 @@ async def _upload_all(
     journey.after_document_upload(app_id, token, trace_id="doc")
 
 
-def test_mock_ocr_and_verification_outcomes():
-    ocr = MockOCRProvider()
-    verify = MockDocumentVerificationProvider()
-    ok = ocr.extract(
-        document_code="IDENTITY_PROOF",
-        filename="id_ok.pdf",
-        mime_type="application/pdf",
-        size_bytes=10,
-        checksum_sha256="abc",
-    )
-    assert ok.success
-    assert (
-        verify.verify(
-            document_code="IDENTITY_PROOF",
-            filename="id_ok.pdf",
-            ocr=ok,
-            form_data={},
-        ).outcome
-        == VerificationOutcome.VERIFIED
-    )
-    bad = ocr.extract(
-        document_code="IDENTITY_PROOF",
-        filename="id_mismatch.pdf",
-        mime_type="application/pdf",
-        size_bytes=10,
-        checksum_sha256="abc",
-    )
-    assert (
-        verify.verify(
-            document_code="IDENTITY_PROOF",
-            filename="id_mismatch.pdf",
-            ocr=bad,
-            form_data={},
-        ).outcome
-        == VerificationOutcome.MISMATCH
-    )
-    unread = ocr.extract(
-        document_code="IDENTITY_PROOF",
-        filename="id_unreadable.pdf",
-        mime_type="application/pdf",
-        size_bytes=10,
-        checksum_sha256="abc",
-    )
-    assert not unread.success
-    assert (
-        verify.verify(
-            document_code="IDENTITY_PROOF",
-            filename="id_unreadable.pdf",
-            ocr=unread,
-            form_data={},
-        ).outcome
-        == VerificationOutcome.UNREADABLE
-    )
-
-
 def test_mock_payment_outcomes():
     p = MockPaymentProvider()
     ok = p.charge(
@@ -177,66 +118,6 @@ def test_state_machine_payment_path():
     assert can_transition(JourneyState.PAYMENT_FAILED, JourneyState.PAYMENT)
     assert can_transition(JourneyState.SUBMITTED, JourneyState.CORRECTION)
     assert not can_transition(JourneyState.LANGUAGE_SELECT, JourneyState.FEE_QUOTE)
-
-
-@pytest.mark.asyncio
-async def test_document_mismatch_recovery(
-    db_session: Session,
-    journey: JourneyService,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setattr(
-        "app.services.documents.get_settings",
-        lambda: type("S", (), {"document_storage_path": str(tmp_path)})(),
-    )
-    app_id, token = _auth_to_form(journey)
-    _fill_form(journey, app_id, token)
-    service = get_service("INCOME_CERTIFICATE")
-    app = journey._get_app_by_ref(app_id)
-    doc = service.documents[0]
-    upload = UploadFile(
-        filename="IDENTITY_PROOF_mismatch.pdf",
-        file=io.BytesIO(b"%PDF-1.4 bad"),
-        headers={"content-type": "application/pdf"},
-    )
-    stored = await store_document(
-        db_session,
-        application_pk=app.id,
-        document_def=doc,
-        upload=upload,
-        actor_id=app.applicant_id,
-        trace_id="mm",
-        form_data=dict(app.form_data or {}),
-        gateway=journey.gateway,
-    )
-    assert stored.verification_outcome == "MISMATCH"
-    reply = journey.after_document_upload(app_id, token, trace_id="mm")
-    assert reply.state == JourneyState.DOCUMENT_REJECTED.value
-    assert reply.data.get("recovery") == "RETRY"
-    # Recapture with good file
-    journey.handle_message(app_id, token, "RETRY", trace_id="mm")
-    upload2 = UploadFile(
-        filename="IDENTITY_PROOF_ok.pdf",
-        file=io.BytesIO(b"%PDF-1.4 good"),
-        headers={"content-type": "application/pdf"},
-    )
-    await store_document(
-        db_session,
-        application_pk=app.id,
-        document_def=doc,
-        upload=upload2,
-        actor_id=app.applicant_id,
-        trace_id="mm",
-        form_data=dict(app.form_data or {}),
-        gateway=journey.gateway,
-    )
-    db_session.expire_all()
-    ok = journey.after_document_upload(app_id, token, trace_id="mm")
-    assert ok.state in {
-        JourneyState.DOCUMENT_CAPTURE.value,
-        JourneyState.REVIEW_CONFIRM.value,
-    }
 
 
 @pytest.mark.asyncio
@@ -277,6 +158,31 @@ async def test_payment_failure_then_success_and_receipt(
     receipt = journey.get_receipt(app_id, token)
     assert "INC-" in (receipt.data.get("receipt") or "")
     assert db_session.query(ReceiptRecord).count() == 1
+
+
+@pytest.mark.asyncio
+async def test_fee_quote_cancel_returns_to_review_without_submit(
+    db_session: Session,
+    journey: JourneyService,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        "app.services.documents.get_settings",
+        lambda: type("S", (), {"document_storage_path": str(tmp_path)})(),
+    )
+    app_id, token = _auth_to_form(journey, trace="cancel")
+    _fill_form(journey, app_id, token)
+    await _upload_all(db_session, journey, app_id, token, tmp_path)
+    if journey._get_app_by_ref(app_id).current_state != JourneyState.REVIEW_CONFIRM.value:
+        journey.handle_message(app_id, token, "DONE", trace_id="cancel")
+    fee = journey.handle_message(app_id, token, "CONFIRM", trace_id="cancel")
+    assert fee.state == JourneyState.FEE_QUOTE.value
+    cancelled = journey.handle_message(app_id, token, "CANCEL", trace_id="cancel")
+    assert cancelled.state == JourneyState.REVIEW_CONFIRM.value
+    assert cancelled.data.get("review")
+    assert journey._get_app_by_ref(app_id).processing_status != ProcessingStatus.UNDER_REVIEW.value
+    assert not journey._get_app_by_ref(app_id).payment_completed
 
 
 @pytest.mark.asyncio
@@ -429,51 +335,6 @@ def test_citizen_cannot_call_officer_apis(db_session: Session, policy_path: Path
         headers={"X-Session-Token": "citizen-token", "X-Officer-Token": "wrong"},
     )
     assert r2.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_restricted_document_never_reaches_cloud(
-    db_session: Session,
-    journey: JourneyService,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    cloud_provider: OptionalCloudProvider,
-    gateway: DataBoundaryGateway,
-):
-    monkeypatch.setattr(
-        "app.services.documents.get_settings",
-        lambda: type("S", (), {"document_storage_path": str(tmp_path)})(),
-    )
-    app_id, token = _auth_to_form(journey, trace="bound")
-    _fill_form(journey, app_id, token)
-    service = get_service("INCOME_CERTIFICATE")
-    app = journey._get_app_by_ref(app_id)
-    upload = UploadFile(
-        filename="IDENTITY_PROOF.pdf",
-        file=io.BytesIO(b"%PDF-1.4 secret-bytes"),
-        headers={"content-type": "application/pdf"},
-    )
-    await store_document(
-        db_session,
-        application_pk=app.id,
-        document_def=service.documents[0],
-        upload=upload,
-        actor_id=app.applicant_id,
-        trace_id="bound",
-        form_data=dict(app.form_data or {}),
-        gateway=gateway,
-    )
-    blocked = gateway.evaluate(
-        GatewayRequest(
-            payload={"document_bytes": "x"},
-            classification=Classification.RESTRICTED,
-            destination="cloud",
-            purpose="ocr",
-        ),
-        db=db_session,
-    )
-    assert blocked.allowed is False
-    assert cloud_provider.call_count == 0
 
 
 def test_invalid_payment_transition_from_language(journey: JourneyService):

@@ -10,13 +10,13 @@ This document separates **intentional POC scope**, **realistic mock adapters**, 
 | Data sovereignty | Fail-closed classification; Data Boundary Gateway; restricted bytes local |
 | Certificate journey | One complete catalogue service: Income Certificate |
 | Channels | Web (text + voice UI), WhatsApp **simulator**, IVR **simulator** |
-| Speech / NLU | Mock/local STT & TTS; rule-based NLU (no external LLM for restricted data) |
+| Speech / NLU | Local faster-whisper STT; **local eSpeak NG TTS** (en/hi/kn, offline, may sound robotic); rule-based NLU. Mock TTS remains for unit tests. No external LLM for restricted data. |
 | Documents | Local upload + deterministic mock OCR/verification |
 | Payment | Mock provider with SUCCESS / FAILURE / TIMEOUT |
 | Receipt | Local plain-text receipt |
 | Officer | Queue + approve / reject / request correction / escalate (shared token RBAC) |
 | Observability | Structured JSON logs, append-only audit, in-process metrics API |
-| Multilingual | English, Hindi, Telugu prompt bundles |
+| Multilingual | English, Hindi, Kannada prompt bundles |
 
 ## Realistic mock adapters (by design)
 
@@ -40,9 +40,11 @@ These are **deliberate substitutes** for production systems so the demo is repro
 
 ## Accessibility and low-literacy support
 
-**Partially addressed in the POC:** guided turn-by-turn conversation, language choice (en/hi/te), voice **and** text modalities, explicit prompts and recovery messages (RETRY, CORRECT, HELP/ESCALATE).
+**Partially addressed in the POC:** guided turn-by-turn conversation, language choice (en/hi/kn), voice **and** text modalities, explicit prompts and recovery messages (RETRY, CORRECT, HELP/ESCALATE).
 
-**Not claimed:** formal WCAG audit, screen-reader certification, or field usability study artifacts.
+**Speech synthesis:** Citizen prompts are spoken locally with **eSpeak NG** (installed in the backend Docker image). Synthesis is fully offline — no cloud TTS. Quality is lightweight and may sound robotic; this is intentional POC scope, not neural/natural TTS. Unit tests may still inject `MockTTSProvider` (tone WAV).
+
+**Not claimed:** formal WCAG audit, screen-reader certification, field usability study artifacts, or natural-sounding neural TTS.
 
 ## Observability honesty
 

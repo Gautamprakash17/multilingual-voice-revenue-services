@@ -28,7 +28,7 @@ Evidence paths are relative to the repository root.
 | Requirement | Status | Implementation | Evidence |
 |-------------|--------|----------------|----------|
 | Voice + text | IMPLEMENTED | Web voice UI + text; channel modalities | `frontend/src/pages/JourneyPage.tsx`, `backend/app/channels/orchestrator.py` |
-| Multilingual support | IMPLEMENTED | en / hi / te | `config/i18n/*.yaml`, `docs/personas-and-scripts.md` |
+| Multilingual support | IMPLEMENTED | en / hi / kn | `config/languages.yaml`, `config/i18n/*.yaml`, `docs/personas-and-scripts.md` |
 | Web channel | IMPLEMENTED | Citizen Apply UI + web adapter | `/journey`, `WebChannelAdapter` |
 | WhatsApp | IMPLEMENTED (simulator) | WhatsApp simulator adapter + UI | `/whatsapp`, `docs/LIMITATIONS.md` |
 | IVR | IMPLEMENTED (simulator) | IVR simulator adapter + UI | `/ivr` |
@@ -37,7 +37,7 @@ Evidence paths are relative to the repository root.
 | Conversational form capture | IMPLEMENTED | Sequential field capture | `backend/app/services/journey.py` |
 | Validation | IMPLEMENTED | Catalogue-driven rules | `backend/app/services/validation.py`, `config/services/income_certificate.yaml` |
 | Document capture | IMPLEMENTED | Local upload MIME/size/checksum | `backend/app/services/documents.py` |
-| Document verification | IMPLEMENTED | Mock OCR + verify outcomes | `backend/app/adapters/documents.py`, `tests/test_p4_workflow.py` |
+| Document verification | IMPLEMENTED | Local mock OCR + verify outcomes (filename markers; not content matching) | `backend/app/adapters/documents.py`, `tests/test_document_verification_workflow.py` |
 | Payment | IMPLEMENTED | Mock SUCCESS/FAILURE/TIMEOUT | `backend/app/adapters/payment.py` |
 | Receipt | IMPLEMENTED | Local plain-text receipt | `backend/app/services/receipts.py`, receipt API |
 | Submission | IMPLEMENTED | After successful payment | Journey → `SUBMITTED` / `UNDER_REVIEW` |

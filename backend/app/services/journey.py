@@ -14,13 +14,29 @@ from app.adapters.payment import PaymentOutcome, get_payment_provider
 from app.boundary.classification import Classification
 from app.boundary.gateway import DataBoundaryGateway, GatewayRequest
 from app.models.application import Application, ConversationSession, PaymentRecord
+from app.nlu.consent import parse_consent_response, parse_field_confirmation_response
 from app.platform.audit import write_audit_event
 from app.platform.metrics import get_metrics
 from app.services.application_ids import generate_application_id
-from app.services.catalogue import ServiceDefinition, get_service
+from app.services.catalogue import FieldDef, ServiceDefinition, get_service
+from app.services.i18n import (
+    document_label,
+    document_missing_list,
+    document_next_prompt,
+    document_reupload_prompt,
+    field_label_for_confirm,
+    language_select_prompt,
+)
 from app.services.i18n import field_prompt as i18n_field_prompt
 from app.services.i18n import t as i18n_t
+from app.services.languages import get_language_catalog
 from app.services.receipts import generate_receipt, latest_receipt
+from app.services.service_selection import (
+    ServiceSelectionStatus,
+    normalize_service_code,
+    resolve_service_affirmative,
+    resolve_service_utterance,
+)
 from app.services.state_machine import (
     InvalidTransitionError,
     JourneyState,
@@ -29,6 +45,18 @@ from app.services.state_machine import (
     initial_state,
 )
 from app.services.validation import validate_field
+from app.speech.dates import (
+    normalize_spoken_date,
+    normalize_spoken_number_field,
+    normalize_spoken_text_field,
+)
+from app.speech.digits import normalize_spoken_otp
+from app.speech.language import resolve_language_choice
+from app.speech.mobile import (
+    extract_spoken_mobile,
+    is_valid_indian_mobile,
+    normalize_indian_mobile_digits,
+)
 
 SERVICE_CODE = "INCOME_CERTIFICATE"
 MAX_AUTH_ATTEMPTS = 3
@@ -209,7 +237,7 @@ class JourneyService:
                 "state": state.value,
             },
         )
-        prompt = i18n_t("language_select", "en")
+        prompt = language_select_prompt(get_language_catalog().default_code)
         return JourneyReply(
             application_id=app_ref,
             state=state.value,
@@ -267,7 +295,7 @@ class JourneyService:
             message="Consent recorded.",
             prompt=self.service.prompts.get(
                 "service_select",
-                "Available service: Income Certificate. Reply INCOME_CERTIFICATE.",
+                "Available service: Income Certificate. Say Income Certificate to continue.",
             ),
         )
 
@@ -278,6 +306,7 @@ class JourneyService:
         text: str,
         *,
         trace_id: str | None = None,
+        input_modality: str | None = None,
     ) -> JourneyReply:
         self._assert_local_only(trace_id)
         app = self._get_app_by_ref(application_id)
@@ -312,6 +341,7 @@ class JourneyService:
             JourneyState.CONSENT: self._on_consent_message,
             JourneyState.SERVICE_SELECT: self._on_service_select,
             JourneyState.FORM_CAPTURE: self._on_form_capture,
+            JourneyState.FIELD_CONFIRMATION: self._on_field_confirmation,
             JourneyState.CORRECTION: self._on_correction,
             JourneyState.DOCUMENT_CAPTURE: self._on_document_message,
             JourneyState.DOCUMENT_REJECTED: self._on_document_rejected_message,
@@ -330,20 +360,201 @@ class JourneyService:
                 message="No action available in this state.",
                 error="unsupported_state",
             )
+        if state == JourneyState.FORM_CAPTURE:
+            return handler(
+                app,
+                session,
+                raw,
+                trace_id=trace_id,
+                input_modality=input_modality,
+            )
+        if state == JourneyState.FIELD_CONFIRMATION:
+            return handler(
+                app,
+                session,
+                raw,
+                trace_id=trace_id,
+                input_modality=input_modality,
+            )
         return handler(app, session, raw, trace_id=trace_id)
+
+    def _normalize_voice_field_input(self, field: FieldDef, text: str) -> str:
+        """Type-driven speech normalization before validation / confirmation.
+
+        Driven by catalogue ``field.type`` — not field-name special cases.
+        """
+        if field.type == "mobile":
+            extracted = extract_spoken_mobile(text)
+            if extracted:
+                return extracted
+            return text
+        if field.type == "date":
+            normalized = normalize_spoken_date(text)
+            if normalized:
+                return normalized
+            return text
+        if field.type == "number":
+            normalized = normalize_spoken_number_field(text)
+            if normalized:
+                return normalized
+            return text
+        if field.type == "string":
+            return normalize_spoken_text_field(text)
+        return text
+
+    def _field_confirmation_reply(
+        self,
+        app: Application,
+        *,
+        field_name: str,
+        proposed_value: str,
+    ) -> JourneyReply:
+        lang = self._lang(app)
+        message = i18n_t("field_confirm_heard", lang, value=proposed_value)
+        return JourneyReply(
+            application_id=app.application_id,
+            state=app.current_state,
+            message=message,
+            prompt=message,
+            data={
+                "field_confirmation": True,
+                "field": field_name,
+                "proposed_value": proposed_value,
+                "next_field": field_name,
+                "form_data": dict(app.form_data or {}),
+            },
+        )
+
+    def _begin_voice_field_confirmation(
+        self,
+        app: Application,
+        session: ConversationSession,
+        field_name: str,
+        value: str,
+        *,
+        trace_id: str | None,
+    ) -> JourneyReply:
+        # Always replace any prior pending confirmation with the current input.
+        app.pending_voice_field = field_name
+        app.pending_voice_value = value
+        self.db.flush()
+        self._transition(
+            app,
+            session,
+            JourneyState.FIELD_CONFIRMATION,
+            trace_id=trace_id,
+            event_type="FIELD_CONFIRM_PENDING",
+            metadata={
+                "field": field_name,
+                "application_ref": app.application_id,
+            },
+        )
+        return self._field_confirmation_reply(
+            app, field_name=field_name, proposed_value=value
+        )
+
+    def _commit_validated_field(
+        self,
+        app: Application,
+        session: ConversationSession,
+        field_name: str,
+        value: Any,
+        *,
+        trace_id: str | None,
+    ) -> JourneyReply:
+        was_correcting = app.correcting_field
+        data = dict(app.form_data or {})
+        data[field_name] = value
+        app.form_data = data
+        app.correcting_field = None
+        app.pending_voice_field = None
+        app.pending_voice_value = None
+        self._audit(
+            "FIELD_CAPTURED",
+            trace_id=trace_id,
+            actor_id=app.applicant_id,
+            metadata={
+                "field": field_name,
+                "application_ref": app.application_id,
+            },
+        )
+
+        if was_correcting:
+            self._transition(app, session, JourneyState.DOCUMENT_CAPTURE, trace_id=trace_id)
+            if not self._missing_documents(app):
+                self._transition(
+                    app,
+                    session,
+                    JourneyState.REVIEW_CONFIRM,
+                    trace_id=trace_id,
+                    event_type="REVIEW_STARTED",
+                )
+                return self._review_reply(app)
+            return JourneyReply(
+                application_id=app.application_id,
+                state=app.current_state,
+                message=f"Updated {field_name}.",
+                prompt="Continue document upload or proceed when complete.",
+                data={"missing_documents": self._missing_documents(app)},
+            )
+
+        nxt = self._next_missing_field(app)
+        if nxt:
+            return JourneyReply(
+                application_id=app.application_id,
+                state=app.current_state,
+                message=f"Recorded {field_name}.",
+                prompt=self._field_prompt(nxt, app),
+                data={
+                    "next_field": nxt,
+                    "form_data": dict(app.form_data or {}),
+                },
+            )
+
+        self._transition(app, session, JourneyState.DOCUMENT_CAPTURE, trace_id=trace_id)
+        missing = self._missing_documents(app)
+        lang = self._lang(app)
+        return JourneyReply(
+            application_id=app.application_id,
+            state=app.current_state,
+            message=i18n_t("form_complete", lang),
+            prompt=document_next_prompt(missing[0], self.service, lang),
+            data={
+                "missing_documents": missing,
+                "form_data": dict(app.form_data or {}),
+            },
+        )
 
     # ---- state handlers ----
 
     def _on_language(
         self, app: Application, session: ConversationSession, text: str, *, trace_id: str | None
     ) -> JourneyReply:
-        lang = text.lower().strip()
-        if lang not in self.service.languages:
+        catalog = get_language_catalog()
+        choice = resolve_language_choice(text)
+        if choice.ambiguous:
             return JourneyReply(
                 application_id=app.application_id,
                 state=app.current_state,
-                message="Unsupported language.",
-                prompt=self.service.prompts.get("language_select"),
+                message=i18n_t(
+                    "language_ambiguous",
+                    catalog.default_code,
+                    language_list=catalog.format_language_list(),
+                ),
+                prompt=language_select_prompt(catalog.default_code),
+                error="language_ambiguous",
+            )
+        lang = choice.code or text.lower().strip()
+        if lang not in self.service.languages or not catalog.is_supported(lang):
+            return JourneyReply(
+                application_id=app.application_id,
+                state=app.current_state,
+                message=i18n_t(
+                    "language_unsupported",
+                    catalog.default_code,
+                    language_list=catalog.format_language_list(),
+                ),
+                prompt=language_select_prompt(catalog.default_code),
                 error="invalid_language",
                 expected_format=", ".join(self.service.languages),
             )
@@ -360,7 +571,7 @@ class JourneyService:
             application_id=app.application_id,
             state=app.current_state,
             message="Language saved.",
-            prompt="Enter your registered mobile number to authenticate.",
+            prompt=i18n_t("auth_mobile", lang),
             data={"language": lang},
         )
 
@@ -369,7 +580,41 @@ class JourneyService:
     ) -> JourneyReply:
         # Two-step: mobile then OTP
         if not app.pending_mobile:
-            mobile = "".join(ch for ch in text if ch.isdigit())
+            lang = app.language or "en"
+            mobile = extract_spoken_mobile(text)
+            if not mobile:
+                compact = normalize_indian_mobile_digits(text)
+                if is_valid_indian_mobile(compact):
+                    mobile = compact
+            if not mobile:
+                app.auth_attempts += 1
+                self._audit(
+                    "AUTH_FAILED",
+                    trace_id=trace_id,
+                    metadata={
+                        "application_ref": app.application_id,
+                        "reason": "unrecognized_mobile",
+                        "attempts": app.auth_attempts,
+                    },
+                )
+                if app.auth_attempts >= MAX_AUTH_ATTEMPTS:
+                    self._transition(
+                        app, session, JourneyState.AUTH_FAILED, trace_id=trace_id
+                    )
+                    return JourneyReply(
+                        application_id=app.application_id,
+                        state=app.current_state,
+                        message="Authentication failed too many times.",
+                        prompt="Please try again, or say help to reach an officer.",
+                        error="auth_failed",
+                    )
+                return JourneyReply(
+                    application_id=app.application_id,
+                    state=app.current_state,
+                    message=i18n_t("auth_mobile_unrecognized", lang),
+                    prompt=i18n_t("auth_mobile", lang),
+                    error="unknown_mobile",
+                )
             challenge = self.identity.request_otp(mobile)
             self._audit(
                 "AUTH_REQUESTED",
@@ -398,14 +643,14 @@ class JourneyService:
                         application_id=app.application_id,
                         state=app.current_state,
                         message="Authentication failed too many times.",
-                        prompt="Reply RETRY to try again, or ESCALATE for help.",
+                        prompt="Please try again, or say help to reach an officer.",
                         error="auth_failed",
                     )
                 return JourneyReply(
                     application_id=app.application_id,
                     state=app.current_state,
-                    message="Mobile number not recognised. Use a seeded synthetic persona.",
-                    prompt="Enter your registered mobile number.",
+                    message=i18n_t("auth_mobile_unrecognized", lang),
+                    prompt=i18n_t("auth_mobile", lang),
                     error="unknown_mobile",
                 )
             app.pending_mobile = challenge.mobile
@@ -413,12 +658,44 @@ class JourneyService:
                 application_id=app.application_id,
                 state=app.current_state,
                 message="A one-time password has been sent (mock).",
-                prompt="Enter the OTP.",
-                data={"otp_hint": "Use the seeded OTP for this persona (never logged)."},
+                prompt=i18n_t("auth_otp", lang),
             )
 
-        # Verify OTP — never audit the OTP value
-        result = self.identity.verify_otp(app.pending_mobile, text)
+        # Verify OTP — normalize spoken/typed digits; never audit the OTP value
+        lang = app.language or "en"
+        otp = normalize_spoken_otp(text)
+        if otp is None:
+            app.auth_attempts += 1
+            self._audit(
+                "AUTH_FAILED",
+                trace_id=trace_id,
+                metadata={
+                    "application_ref": app.application_id,
+                    "reason": "invalid_otp_format",
+                    "attempts": app.auth_attempts,
+                },
+            )
+            if app.auth_attempts >= MAX_AUTH_ATTEMPTS:
+                app.pending_mobile = None
+                self._transition(
+                    app, session, JourneyState.AUTH_FAILED, trace_id=trace_id
+                )
+                return JourneyReply(
+                    application_id=app.application_id,
+                    state=app.current_state,
+                    message="Authentication failed too many times.",
+                    prompt="Please try again, or say help to reach an officer.",
+                    error="auth_failed",
+                )
+            return JourneyReply(
+                application_id=app.application_id,
+                state=app.current_state,
+                message=i18n_t("auth_otp_incorrect", lang),
+                prompt=i18n_t("auth_otp", lang),
+                error="invalid_otp",
+            )
+
+        result = self.identity.verify_otp(app.pending_mobile, otp)
         if not result.success or not result.persona:
             app.auth_attempts += 1
             self._audit(
@@ -439,14 +716,14 @@ class JourneyService:
                     application_id=app.application_id,
                     state=app.current_state,
                     message="Authentication failed too many times.",
-                    prompt="Reply RETRY to try again, or ESCALATE for help.",
+                    prompt="Please try again, or say help to reach an officer.",
                     error="auth_failed",
                 )
             return JourneyReply(
                 application_id=app.application_id,
                 state=app.current_state,
-                message="Incorrect OTP.",
-                prompt="Enter the OTP again.",
+                message=i18n_t("auth_otp_incorrect", lang),
+                prompt=i18n_t("auth_otp", lang),
                 error="invalid_otp",
             )
 
@@ -460,12 +737,12 @@ class JourneyService:
             metadata={"application_ref": app.application_id, "persona_id": result.persona.id},
         )
         self._transition(app, session, JourneyState.CONSENT, trace_id=trace_id)
+        # Synthetic persona identity stays in seed config and audit actor_id only.
         return JourneyReply(
             application_id=app.application_id,
             state=app.current_state,
-            message=f"Authenticated as {result.persona.name}.",
+            message=i18n_t("auth_success", lang),
             prompt=self.service.prompts.get("consent"),
-            data={"persona_name": result.persona.name},
         )
 
     def _on_auth_failed(
@@ -486,21 +763,28 @@ class JourneyService:
             application_id=app.application_id,
             state=app.current_state,
             message="Authentication blocked.",
-            prompt="Reply RETRY or ESCALATE.",
+            prompt="Please try again, or say help to reach an officer.",
         )
 
     def _on_consent_message(
         self, app: Application, session: ConversationSession, text: str, *, trace_id: str | None
     ) -> JourneyReply:
-        answer = text.strip().upper()
-        granted = answer in {"YES", "Y", "I AGREE", "AGREE"}
-        declined = answer in {"NO", "N", "DECLINE"}
+        decision = parse_consent_response(text)
+        if decision is True:
+            granted, declined = True, False
+        elif decision is False:
+            granted, declined = False, True
+        else:
+            answer = text.strip().upper()
+            granted = answer in {"YES", "Y", "I AGREE", "AGREE"}
+            declined = answer in {"NO", "N", "DECLINE"}
         if not granted and not declined:
+            lang = self._lang(app)
             return JourneyReply(
                 application_id=app.application_id,
                 state=app.current_state,
-                message="Please reply YES to consent or NO to decline.",
-                prompt=self.service.prompts.get("consent"),
+                message=i18n_t("consent_unclear", lang),
+                prompt=i18n_t("consent", lang),
                 error="consent_unclear",
             )
         return self.record_consent(
@@ -517,35 +801,65 @@ class JourneyService:
                 message="Consent is required before selecting a service.",
                 error="consent_required",
             )
-        code = text.strip().upper().replace(" ", "_")
-        if code not in {SERVICE_CODE, "INCOME", "YES"}:
+        lang = app.language or "en"
+        raw = (text or "").strip()
+        token = normalize_service_code(raw)
+        if token == "YES":
+            selection = resolve_service_affirmative()
+        else:
+            selection = resolve_service_utterance(raw, language=lang)
+        if selection.status == ServiceSelectionStatus.AMBIGUOUS:
             return JourneyReply(
                 application_id=app.application_id,
                 state=app.current_state,
-                message="Unknown service.",
-                prompt=self.service.prompts.get("service_select"),
+                message=i18n_t("service_select_ambiguous", lang),
+                prompt=i18n_t("service_select", lang),
+                error="service_select_ambiguous",
+                data={"matching_services": list(selection.matches)},
+            )
+        if selection.status != ServiceSelectionStatus.MATCHED or not selection.service_code:
+            return JourneyReply(
+                application_id=app.application_id,
+                state=app.current_state,
+                message=i18n_t("service_select_unknown", lang),
+                prompt=i18n_t("service_select", lang),
                 error="unknown_service",
             )
-        app.service_code = SERVICE_CODE
+        service = get_service(selection.service_code)
+        app.service_code = service.service_code
         self._transition(
             app,
             session,
             JourneyState.FORM_CAPTURE,
             trace_id=trace_id,
             event_type="SERVICE_SELECTED",
-            metadata={"service_code": SERVICE_CODE, "application_ref": app.application_id},
+            metadata={
+                "service_code": service.service_code,
+                "application_ref": app.application_id,
+            },
         )
-        first = self.service.required_field_names()[0]
+        first = service.required_field_names()[0]
         return JourneyReply(
             application_id=app.application_id,
             state=app.current_state,
-            message=f"Starting {self.service.display_name}.",
+            message=f"Starting {service.display_name}.",
             prompt=self._field_prompt(first, app),
-            data={"next_field": first},
+            data={
+                "next_field": first,
+                "form_data": dict(app.form_data or {}),
+                "service_code": service.service_code,
+                "service_display_name": service.display_name,
+            },
         )
 
     def _on_form_capture(
-        self, app: Application, session: ConversationSession, text: str, *, trace_id: str | None
+        self,
+        app: Application,
+        session: ConversationSession,
+        text: str,
+        *,
+        trace_id: str | None,
+        input_modality: str | None = None,
     ) -> JourneyReply:
         if not app.consent_granted:
             return JourneyReply(
@@ -583,17 +897,25 @@ class JourneyService:
             # All fields present — move to documents
             self._transition(app, session, JourneyState.DOCUMENT_CAPTURE, trace_id=trace_id)
             missing = self._missing_documents(app)
+            lang = self._lang(app)
             return JourneyReply(
                 application_id=app.application_id,
                 state=app.current_state,
-                message="Form complete. Please upload required documents.",
-                prompt=f"Upload next: {missing[0]}" if missing else "All documents uploaded.",
+                message=i18n_t("form_complete", lang),
+                prompt=(
+                    document_next_prompt(missing[0], self.service, lang)
+                    if missing
+                    else i18n_t("document_all_uploaded", lang)
+                ),
                 data={"missing_documents": missing},
             )
 
         field = self.service.field_by_name(field_name)
         assert field is not None
-        result = validate_field(field, text)
+        capture_text = text
+        if input_modality == "voice":
+            capture_text = self._normalize_voice_field_input(field, text)
+        result = validate_field(field, capture_text)
         if not result.ok:
             self._audit(
                 "VALIDATION_FAILED",
@@ -615,60 +937,122 @@ class JourneyService:
                 data={"field": field_name},
             )
 
-        data = dict(app.form_data or {})
-        data[field_name] = result.value
-        app.form_data = data
-        was_correcting = app.correcting_field
-        app.correcting_field = None
-        self._audit(
-            "FIELD_CAPTURED",
+        if input_modality == "voice":
+            return self._begin_voice_field_confirmation(
+                app,
+                session,
+                field_name,
+                str(result.value),
+                trace_id=trace_id,
+            )
+
+        return self._commit_validated_field(
+            app,
+            session,
+            field_name,
+            result.value,
             trace_id=trace_id,
-            actor_id=app.applicant_id,
-            metadata={
-                "field": field_name,
-                "application_ref": app.application_id,
-                # never store the raw citizen value
-            },
         )
 
-        if was_correcting:
-            self._transition(app, session, JourneyState.DOCUMENT_CAPTURE, trace_id=trace_id)
-            # Jump back toward review if docs already complete
-            if not self._missing_documents(app):
-                self._transition(
-                    app,
-                    session,
-                    JourneyState.REVIEW_CONFIRM,
-                    trace_id=trace_id,
-                    event_type="REVIEW_STARTED",
-                )
-                return self._review_reply(app)
+    def _clear_pending_voice_confirmation(self, app: Application) -> None:
+        """Drop pending confirmation so a retry cannot reuse a rejected value."""
+        app.pending_voice_field = None
+        app.pending_voice_value = None
+        # Session uses autoflush=False — flush so later reads in this request see clears.
+        self.db.flush()
+
+    def _on_field_confirmation(
+        self,
+        app: Application,
+        session: ConversationSession,
+        text: str,
+        *,
+        trace_id: str | None,
+        input_modality: str | None = None,
+    ) -> JourneyReply:
+        field_name = app.pending_voice_field
+        proposed = app.pending_voice_value
+        lang = self._lang(app)
+        if not field_name or proposed is None:
+            self._clear_pending_voice_confirmation(app)
+            self._transition(
+                app,
+                session,
+                JourneyState.FORM_CAPTURE,
+                trace_id=trace_id,
+                event_type="FIELD_CONFIRM_RESET",
+            )
+            nxt = self._next_missing_field(app) or field_name
             return JourneyReply(
                 application_id=app.application_id,
                 state=app.current_state,
-                message=f"Updated {field_name}.",
-                prompt="Continue document upload or proceed when complete.",
-                data={"missing_documents": self._missing_documents(app)},
+                message=i18n_t("error_generic", lang),
+                prompt=self._field_prompt(nxt, app) if nxt else i18n_t("form_complete", lang),
+                data={"next_field": nxt, "form_data": dict(app.form_data or {})},
             )
 
-        nxt = self._next_missing_field(app)
-        if nxt:
+        decision = parse_field_confirmation_response(text)
+        if decision is True:
+            value = proposed
+            self._clear_pending_voice_confirmation(app)
+            self._transition(
+                app,
+                session,
+                JourneyState.FORM_CAPTURE,
+                trace_id=trace_id,
+                event_type="FIELD_CONFIRM_ACCEPTED",
+                metadata={"field": field_name, "application_ref": app.application_id},
+            )
+            return self._commit_validated_field(
+                app,
+                session,
+                field_name,
+                value,
+                trace_id=trace_id,
+            )
+
+        if decision is False:
+            self._clear_pending_voice_confirmation(app)
+            self._transition(
+                app,
+                session,
+                JourneyState.FORM_CAPTURE,
+                trace_id=trace_id,
+                event_type="FIELD_CONFIRM_DECLINED",
+                metadata={"field": field_name, "application_ref": app.application_id},
+            )
+            label = field_label_for_confirm(field_name, lang)
+            retry = i18n_t("field_confirm_retry", lang, field_label=label)
             return JourneyReply(
                 application_id=app.application_id,
                 state=app.current_state,
-                message=f"Recorded {field_name}.",
-                prompt=self._field_prompt(nxt, app),
-                data={"next_field": nxt},
+                message=retry,
+                prompt=self._field_prompt(field_name, app),
+                data={
+                    "next_field": field_name,
+                    "field": field_name,
+                    "form_data": dict(app.form_data or {}),
+                },
             )
 
-        self._transition(app, session, JourneyState.DOCUMENT_CAPTURE, trace_id=trace_id)
-        missing = self._missing_documents(app)
-        return JourneyReply(
-            application_id=app.application_id,
-            state=app.current_state,
-            message="All form fields captured.",
-            prompt=f"Upload document: {missing[0]}",
-            data={"missing_documents": missing},
+        # Not yes/no — treat as a new attempt for the same field. Never re-prompt
+        # the rejected pending value (that caused stale "I heard: …" after retry).
+        self._clear_pending_voice_confirmation(app)
+        self._transition(
+            app,
+            session,
+            JourneyState.FORM_CAPTURE,
+            trace_id=trace_id,
+            event_type="FIELD_CONFIRM_REPLACED",
+            metadata={"field": field_name, "application_ref": app.application_id},
+        )
+        modality = input_modality or "voice"
+        return self._on_form_capture(
+            app,
+            session,
+            text,
+            trace_id=trace_id,
+            input_modality=modality,
         )
 
     def _on_correction(
@@ -694,7 +1078,10 @@ class JourneyService:
             state=app.current_state,
             message=f"Correcting {field_name}.",
             prompt=self._field_prompt(field_name, app),
-            data={"next_field": field_name},
+            data={
+                "next_field": field_name,
+                "form_data": dict(app.form_data or {}),
+            },
         )
 
     def _on_document_message(
@@ -712,11 +1099,12 @@ class JourneyService:
             )
             return self._review_reply(app)
         if missing:
+            lang = self._lang(app)
             return JourneyReply(
                 application_id=app.application_id,
                 state=app.current_state,
-                message="Please upload the required documents via the upload endpoint.",
-                prompt=f"Still missing: {', '.join(missing)}",
+                message=i18n_t("document_upload_required", lang),
+                prompt=document_missing_list(missing, self.service, lang),
                 data={"missing_documents": missing},
             )
         self._transition(
@@ -734,18 +1122,26 @@ class JourneyService:
         if text.strip().upper() in {"RETRY", "UPLOAD", "OK"}:
             self._transition(app, session, JourneyState.DOCUMENT_CAPTURE, trace_id=trace_id)
             missing = self._missing_documents(app)
+            lang = self._lang(app)
             return JourneyReply(
                 application_id=app.application_id,
                 state=app.current_state,
-                message="Please re-upload the rejected document.",
-                prompt=f"Upload: {missing[0]}" if missing else "Upload a document.",
+                message=i18n_t("document_reupload", lang, document_name=document_label(
+                    missing[0], self.service, lang
+                )) if missing else i18n_t("document_prompt", lang),
+                prompt=(
+                    document_next_prompt(missing[0], self.service, lang)
+                    if missing
+                    else i18n_t("document_prompt", lang)
+                ),
                 data={"missing_documents": missing},
             )
+        lang = self._lang(app)
         return JourneyReply(
             application_id=app.application_id,
             state=app.current_state,
-            message="Document was rejected.",
-            prompt="Reply RETRY to upload again.",
+            message=i18n_t("document_rejected", lang),
+            prompt=i18n_t("document_prompt", lang),
         )
 
     def _on_review(
@@ -787,14 +1183,15 @@ class JourneyService:
         rupees = amount / 100
         prompt_tpl = self.service.prompts.get(
             "fee_quote",
-            "Application fee is {amount} {currency}. Reply PAY to proceed.",
+            "The application fee is {amount} {currency}. "
+            "Say yes to pay now, or say change to edit your details.",
         )
         message = prompt_tpl.format(amount=f"{rupees:.2f}", currency=currency)
         return JourneyReply(
             application_id=app.application_id,
             state=app.current_state,
             message=message,
-            prompt="Reply PAY to continue, or CORRECT to edit.",
+            prompt="Say yes to pay now, or say change to edit your details.",
             error=error,
             data={
                 "fee": {
@@ -809,6 +1206,17 @@ class JourneyService:
         self, app: Application, session: ConversationSession, text: str, *, trace_id: str | None
     ) -> JourneyReply:
         cmd = text.strip().upper()
+        if cmd in {"CANCEL", "BACK"}:
+            # Return to review without entering field-by-field correction.
+            self._transition(
+                app,
+                session,
+                JourneyState.REVIEW_CONFIRM,
+                trace_id=trace_id,
+                event_type="PAYMENT_CANCELLED",
+                metadata={"application_ref": app.application_id, "from_state": "FEE_QUOTE"},
+            )
+            return self._review_reply(app)
         if cmd == "CORRECT":
             self._transition(
                 app,
@@ -837,9 +1245,9 @@ class JourneyService:
                 state=app.current_state,
                 message=self.service.prompts.get(
                     "payment_prompt",
-                    "Complete payment. Reply PAY, FAIL, or TIMEOUT.",
+                    "Please confirm the payment. Say yes to complete it, or say cancel to go back.",
                 ),
-                prompt="Reply PAY / FAIL / TIMEOUT",
+                prompt="Say yes to complete the payment, or say cancel to go back.",
                 data={
                     "fee": {
                         "amount_paise": app.fee_amount_paise,
@@ -852,12 +1260,34 @@ class JourneyService:
     def _on_payment(
         self, app: Application, session: ConversationSession, text: str, *, trace_id: str | None
     ) -> JourneyReply:
+        cmd = text.strip().upper()
+        if cmd in {"CANCEL", "BACK"}:
+            # Abort payment without submitting; return to fee quote.
+            self._transition(
+                app,
+                session,
+                JourneyState.FEE_QUOTE,
+                trace_id=trace_id,
+                event_type="PAYMENT_CANCELLED",
+                metadata={"application_ref": app.application_id, "from_state": "PAYMENT"},
+            )
+            return self._fee_quote_reply(app)
         return self._attempt_payment(app, session, text, trace_id=trace_id)
 
     def _on_payment_failed(
         self, app: Application, session: ConversationSession, text: str, *, trace_id: str | None
     ) -> JourneyReply:
         cmd = text.strip().upper()
+        if cmd in {"CANCEL", "BACK"}:
+            self._transition(
+                app,
+                session,
+                JourneyState.FEE_QUOTE,
+                trace_id=trace_id,
+                event_type="PAYMENT_CANCELLED",
+                metadata={"application_ref": app.application_id, "from_state": "PAYMENT_FAILED"},
+            )
+            return self._fee_quote_reply(app)
         if cmd in {"RETRY", "PAY", "YES", "OK"}:
             self._transition(app, session, JourneyState.PAYMENT, trace_id=trace_id)
             return self._attempt_payment(
@@ -871,9 +1301,9 @@ class JourneyService:
             state=app.current_state,
             message=self.service.prompts.get(
                 "payment_failed",
-                "Payment did not succeed. Reply RETRY to try again.",
+                "The payment did not go through. Say yes to try again, or say cancel to go back.",
             ),
-            prompt="Reply RETRY or PAY",
+            prompt="Say yes to try again, or say cancel to go back.",
         )
 
     def _attempt_payment(
@@ -939,9 +1369,9 @@ class JourneyService:
                 state=app.current_state,
                 message=(
                     "Payment timed out. Your application is parked safely. "
-                    "Reply RETRY to try again."
+                    "Say yes to try again."
                 ),
-                prompt="Reply RETRY",
+                prompt="Say yes to try again, or say cancel to go back.",
                 error="payment_timeout",
                 data={"recovery": "RETRY"},
             )
@@ -958,8 +1388,8 @@ class JourneyService:
         return JourneyReply(
             application_id=app.application_id,
             state=app.current_state,
-            message="Payment failed. Reply RETRY to try again.",
-            prompt="Reply RETRY or PAY",
+            message="The payment did not go through. Say yes to try again.",
+            prompt="Say yes to try again, or say cancel to go back.",
             error="payment_failed",
             data={"recovery": "RETRY"},
         )
@@ -1042,8 +1472,10 @@ class JourneyService:
         return JourneyReply(
             application_id=app.application_id,
             state=app.current_state,
-            message=self.service.prompts.get("review_intro", "Please review."),
-            prompt="Reply CONFIRM to continue to fee payment, or CORRECT to change a field.",
+            # Reached via the raw journey API too (document upload), so localize here
+            # rather than relying on the channel orchestrator.
+            message=i18n_t("review_intro", self._lang(app)),
+            prompt=i18n_t("review_intro", self._lang(app)),
             error=error,
             data={
                 "review": {
@@ -1109,8 +1541,8 @@ class JourneyService:
         return JourneyReply(
             application_id=app.application_id,
             state=app.current_state,
-            message=f"Document rejected: {reason}",
-            prompt="Reply RETRY to upload again.",
+            message=i18n_t("document_rejected", self._lang(app)),
+            prompt=i18n_t("document_prompt", self._lang(app)),
             data={"recovery": "RETRY", "reason": reason},
         )
 
@@ -1148,11 +1580,20 @@ class JourneyService:
                             "outcome": target.verification_status,
                         },
                     )
+                lang = self._lang(app)
                 return JourneyReply(
                     application_id=app.application_id,
                     state=app.current_state,
-                    message=f"Document verification failed: {target.verification_reason}",
-                    prompt="Reply RETRY to re-upload.",
+                    message=i18n_t(
+                        "document_verification_failed",
+                        lang,
+                        document_name=document_label(
+                            target.document_code, self.service, lang
+                        ),
+                    ),
+                    prompt=document_reupload_prompt(
+                        target.document_code, self.service, lang
+                    ),
                     error="document_verification_failed",
                     data={
                         "recovery": "RETRY",
@@ -1162,11 +1603,12 @@ class JourneyService:
                 )
         missing = self._missing_documents(app)
         if missing:
+            lang = self._lang(app)
             return JourneyReply(
                 application_id=app.application_id,
                 state=app.current_state,
-                message="Document stored and verified locally.",
-                prompt=f"Next upload: {missing[0]}",
+                message=i18n_t("document_stored", lang),
+                prompt=document_next_prompt(missing[0], self.service, lang),
                 data={"missing_documents": missing},
             )
         self._transition(

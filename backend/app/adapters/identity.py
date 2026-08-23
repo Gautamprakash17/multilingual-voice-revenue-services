@@ -17,7 +17,6 @@ class Persona:
     name: str
     mobile: str
     otp: str
-    language: str = "en"
 
 
 @dataclass
@@ -95,7 +94,6 @@ def load_personas(path: Path | None = None) -> list[Persona]:
                 name=item["name"],
                 mobile=str(item["mobile"]),
                 otp=str(item["otp"]),
-                language=str(item.get("language", "en")),
             )
         )
     return personas

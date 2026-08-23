@@ -28,7 +28,11 @@ export default function IVRSimulatorPage() {
     if (reply.access_token) setToken(reply.access_token);
     setState(reply.state);
     setPrompt(reply.prompt || reply.message);
-    setLog((l) => [...l, `BOT: ${reply.message}`, reply.prompt ? `PROMPT: ${reply.prompt}` : ""].filter(Boolean));
+    setLog((l) =>
+      [...l, `BOT: ${reply.message}`, reply.prompt ? `PROMPT: ${reply.prompt}` : ""].filter(
+        Boolean,
+      ),
+    );
     playAudio(reply.audio_b64, reply.audio_mime);
   }
 
@@ -88,22 +92,34 @@ export default function IVRSimulatorPage() {
     <section className="panel ivr-sim">
       <h1>IVR Simulator</h1>
       <p className="lede">
-        Phone-like DTMF + simulated speech. Channel=ivr via the common MessageEnvelope.
+        Telephone-style keypad and simulated speech for the same certificate journey. This is
+        not a live phone line.
       </p>
-      {error && <div className="alert error">{error}</div>}
+      {error && (
+        <div className="alert error" role="alert">
+          {error}
+        </div>
+      )}
 
-      <div className="journey-actions">
-        <button type="button" onClick={() => void onCall()} disabled={busy}>
-          Start call
-        </button>
-        <span className="state-pill">{state}</span>
-        <strong>{applicationId ?? "—"}</strong>
+      <div className="section-card">
+        <div className="journey-actions">
+          <button type="button" onClick={() => void onCall()} disabled={busy}>
+            Start call
+          </button>
+          <span className="state-pill" aria-label={`Call state ${state}`}>
+            {state}
+          </span>
+          <strong>{applicationId ?? "No call yet"}</strong>
+        </div>
+        <p className="prompt-line" aria-live="polite">
+          {prompt || "Press Start call to begin"}
+        </p>
       </div>
 
-      <p className="prompt-line">{prompt || "Dial to begin"}</p>
-
-      <div className="phone">
-        <div className="phone-screen">{buffer || "—"}</div>
+      <div className="phone" aria-label="Telephone keypad">
+        <div className="phone-screen" aria-live="polite">
+          {buffer || "—"}
+        </div>
         <div className="keypad">
           {KEYS.map((k) => (
             <button
@@ -112,6 +128,7 @@ export default function IVRSimulatorPage() {
               className="ghost"
               disabled={busy || !token}
               onClick={() => setBuffer((b) => b + k)}
+              aria-label={`Key ${k}`}
             >
               {k}
             </button>
@@ -131,19 +148,31 @@ export default function IVRSimulatorPage() {
         </div>
       </div>
 
-      <div className="composer">
-        <input
-          value={speech}
-          onChange={(e) => setSpeech(e.target.value)}
-          placeholder="Simulated speech (e.g. en, YES, CONFIRM)"
-          disabled={busy || !token}
-        />
-        <button type="button" disabled={busy || !token} onClick={() => void sendSpeech()}>
-          Speak
-        </button>
+      <div className="section-card">
+        <h2>Simulated speech</h2>
+        <div className="composer">
+          <label htmlFor="ivr-speech" className="visually-hidden">
+            Simulated speech
+          </label>
+          <input
+            id="ivr-speech"
+            value={speech}
+            onChange={(e) => setSpeech(e.target.value)}
+            placeholder="e.g. en, YES, CONFIRM"
+            disabled={busy || !token}
+            aria-label="Simulated speech"
+          />
+          <button
+            type="button"
+            disabled={busy || !token || !speech.trim()}
+            onClick={() => void sendSpeech()}
+          >
+            Speak
+          </button>
+        </div>
       </div>
 
-      <div className="chat-log">
+      <div className="chat-log" role="log" aria-live="polite">
         {log.map((line, i) => (
           <div key={i} className="bubble system">
             {line}

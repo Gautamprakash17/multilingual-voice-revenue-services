@@ -1,4 +1,4 @@
-"""FastAPI application entry point — P1 foundation."""
+"""FastAPI application entry point."""
 
 from __future__ import annotations
 

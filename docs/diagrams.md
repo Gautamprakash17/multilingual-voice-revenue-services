@@ -93,7 +93,7 @@ sequenceDiagram
   participant ID as MockIdentityProvider
   U->>API: start application
   API->>J: LANGUAGE_SELECT
-  U->>API: language (en/hi/te)
+  U->>API: language (en/hi/kn)
   U->>API: mobile number
   J->>ID: request OTP (seeded persona)
   U->>API: OTP

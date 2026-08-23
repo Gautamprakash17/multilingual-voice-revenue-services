@@ -7,6 +7,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.nlu.consent import parse_consent_response, parse_field_confirmation_response
+
 
 @dataclass
 class NLUResult:
@@ -24,16 +26,17 @@ class NLUProvider(ABC):
 class LocalRuleNLUProvider(NLUProvider):
     """Deterministic regex/keyword NLU for Income Certificate POC."""
 
-    _CONFIRM = re.compile(r"^\s*(confirm|yes|y|हाँ|हां|అవును|ok)\s*$", re.I)
-    _CORRECT = re.compile(r"^\s*(correct|edit|change|सुधार|సరిదిద్దు)\s*$", re.I)
+    _CONFIRM = re.compile(r"^\s*(confirm|yes|y|हाँ|हां|ok)\s*$", re.I)
+    _CORRECT = re.compile(r"^\s*(correct|edit|change|सुधार|बदलें|ಸರಿಪಡಿಸಿ|ಬದಲಾಯಿಸಿ)\s*$", re.I)
+    _CANCEL = re.compile(r"^\s*(cancel|go back|रद्द|रद्द करें|ರದ್ದು|ಹಿಂತಿರುಗಿ)\s*$", re.I)
     _CONSENT = re.compile(
-        r"^\s*(yes|y|i agree|agree|हाँ|हां|అవును)\s*$", re.I
+        r"^\s*(yes|y|yeah|i agree|agree|हाँ|हां|ಹೌದು)\s*$", re.I
     )
-    _DECLINE = re.compile(r"^\s*(no|n|decline|नहीं|కాదు)\s*$", re.I)
-    _ESCALATE = re.compile(r"^\s*(escalate|help|agent|officer|सहायता|సహాయం)\s*$", re.I)
-    _STATUS = re.compile(r"^\s*(status|track|स्थिति|స్థితి)\s*$", re.I)
+    _DECLINE = re.compile(r"^\s*(no|n|nope|decline|नहीं|ಇಲ್ಲ)\s*$", re.I)
+    _ESCALATE = re.compile(r"^\s*(escalate|help|agent|officer|सहायता|ಸಹಾಯ)\s*$", re.I)
+    _STATUS = re.compile(r"^\s*(status|track|स्थिति)\s*$", re.I)
     _START = re.compile(
-        r"^\s*(start|begin|apply|income\s*certificate|आवेदन|దరఖాస్తు)\s*$", re.I
+        r"^\s*(start|begin|apply|income\s*certificate|आवेदन)\s*$", re.I
     )
     _DOB = re.compile(r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b")
     _MOBILE = re.compile(r"\b([6-9]\d{9})\b")
@@ -44,6 +47,32 @@ class LocalRuleNLUProvider(NLUProvider):
         if not raw:
             return NLUResult(intent="UNKNOWN", confidence=0.0)
 
+        if expected_field == "__field_confirm__":
+            decision = parse_field_confirmation_response(raw)
+            if decision is True:
+                return NLUResult(
+                    intent="CONSENT", slots={"granted": True}, confidence=0.95
+                )
+            if decision is False:
+                return NLUResult(
+                    intent="CONSENT", slots={"granted": False}, confidence=0.95
+                )
+            return NLUResult(intent="UNKNOWN", confidence=0.2)
+
+        if expected_field == "__consent__":
+            decision = parse_consent_response(raw)
+            if decision is True:
+                return NLUResult(
+                    intent="CONSENT", slots={"granted": True}, confidence=0.95
+                )
+            if decision is False:
+                return NLUResult(
+                    intent="CONSENT", slots={"granted": False}, confidence=0.95
+                )
+            return NLUResult(intent="UNKNOWN", confidence=0.2)
+
+        if self._CANCEL.match(raw):
+            return NLUResult(intent="CANCEL", confidence=0.9)
         if self._ESCALATE.match(raw):
             return NLUResult(intent="ESCALATE", confidence=0.95)
         if self._STATUS.match(raw):
@@ -81,13 +110,13 @@ class LocalRuleNLUProvider(NLUProvider):
                 )
 
         if expected_field == "annual_income":
-            m = self._INCOME.search(raw.replace(",", ""))
-            if m:
-                return NLUResult(
-                    intent="PROVIDE_INCOME",
-                    slots={"annual_income": m.group(1).replace(",", "")},
-                    confidence=0.85,
-                )
+            # Pass the full transcript through — journey number normalization owns
+            # spaced/comma/spoken digits. Do not truncate to the first digit group.
+            return NLUResult(
+                intent="PROVIDE_INCOME",
+                slots={"annual_income": raw},
+                confidence=0.85,
+            )
 
         intent_map = {
             "applicant_name": "PROVIDE_NAME",

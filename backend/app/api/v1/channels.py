@@ -15,8 +15,15 @@ from app.channels.orchestrator import ChannelOrchestrator, ChannelReply
 from app.core.database import get_db
 from app.platform.metrics import get_metrics
 from app.services.state_machine import InvalidTransitionError
+from app.speech.tts import TTSUnavailableError
 
 router = APIRouter(tags=["channels"])
+
+_CITIZEN_TTS_UNAVAILABLE = "Speech playback is temporarily unavailable. Please continue with text."
+
+
+def _raise_tts_unavailable() -> None:
+    raise HTTPException(status_code=503, detail=_CITIZEN_TTS_UNAVAILABLE)
 
 
 class ChannelMessageRequest(BaseModel):
@@ -93,8 +100,13 @@ def channel_start(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Unsupported channel") from exc
     orch = ChannelOrchestrator(db, gateway=gateway)
-    reply = orch.start(channel=channel.lower(), trace_id=_trace(request))
-    db.commit()
+    try:
+        reply = orch.start(channel=channel.lower(), trace_id=_trace(request))
+        db.commit()
+    except TTSUnavailableError:
+        db.rollback()
+        get_metrics().record_channel_error()
+        _raise_tts_unavailable()
     return _to_response(reply)
 
 
@@ -147,6 +159,10 @@ def channel_message(
         db.rollback()
         get_metrics().record_channel_error()
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    except TTSUnavailableError:
+        db.rollback()
+        get_metrics().record_channel_error()
+        _raise_tts_unavailable()
     return _to_response(reply)
 
 
@@ -174,6 +190,10 @@ def channel_resume(
         raise HTTPException(status_code=403, detail="Access denied") from None
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    except TTSUnavailableError:
+        db.rollback()
+        get_metrics().record_channel_error()
+        _raise_tts_unavailable()
     return _to_response(reply)
 
 

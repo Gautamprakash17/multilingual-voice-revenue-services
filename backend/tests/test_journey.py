@@ -1,4 +1,4 @@
-"""P2 journey integration tests — Income Certificate."""
+"""Journey integration tests — Income Certificate."""
 
 from __future__ import annotations
 
@@ -134,6 +134,18 @@ def test_consent_required_before_data_capture(journey: JourneyService):
     assert declined.state == JourneyState.CONSENT.value
 
 
+def test_language_select_accepts_natural_spoken_names(journey: JourneyService):
+    for spoken, code in [("English", "en"), ("Hindi", "hi"), ("Kannada", "kn")]:
+        start = journey.start(trace_id="lang-voice")
+        token = start.access_token
+        assert token
+        reply = journey.handle_message(start.application_id, token, spoken, trace_id="lang-voice")
+        assert reply.error != "invalid_language"
+        assert reply.state == JourneyState.AUTHENTICATE.value
+        app = journey._get_app_by_ref(start.application_id)
+        assert app.language == code
+
+
 def test_invalid_and_valid_form_values(journey: JourneyService):
     app_id, token = _auth_to_form(journey)
     # applicant_name min_length 2 — single character must fail
@@ -142,9 +154,56 @@ def test_invalid_and_valid_form_values(journey: JourneyService):
     good = journey.handle_message(app_id, token, "Lakshmi Devi", trace_id="val")
     assert good.error is None
     assert good.data.get("next_field") == "date_of_birth"
+    # Empty / whitespace DOB must not be saved
+    empty_dob = journey.handle_message(app_id, token, "   ", trace_id="val")
+    assert empty_dob.error == "validation_failed"
+    assert "required" in (empty_dob.message or "").lower()
+    assert journey._get_app_by_ref(app_id).form_data.get("date_of_birth") is None
     bad_date = journey.handle_message(app_id, token, "99/99/9999", trace_id="val")
     assert bad_date.error == "validation_failed"
     journey.handle_message(app_id, token, "12/04/1995", trace_id="val")
+    assert journey._get_app_by_ref(app_id).form_data.get("date_of_birth") == "12/04/1995"
+
+
+def test_empty_required_fields_rejected_from_catalogue(journey: JourneyService):
+    """Backend remains source of truth for required catalog fields."""
+    app_id, token = _auth_to_form(journey)
+    service = get_service("INCOME_CERTIFICATE")
+    for field in service.fields:
+        if not field.required:
+            continue
+        # Reach this field
+        while True:
+            app = journey._get_app_by_ref(app_id)
+            missing = [
+                name
+                for name in service.required_field_names()
+                if name not in (app.form_data or {})
+            ]
+            if not missing or missing[0] == field.name:
+                break
+            # Fill prior fields with minimal valid values
+            prior = service.field_by_name(missing[0])
+            assert prior is not None
+            sample = {
+                "string": "Sample value",
+                "date": "12/04/1995",
+                "mobile": "9876543210",
+                "number": "120000",
+            }.get(prior.type, "Sample")
+            journey.handle_message(app_id, token, sample, trace_id="req-empty")
+        empty = journey.handle_message(app_id, token, "", trace_id="req-empty")
+        assert empty.error == "validation_failed", field.name
+        assert field.name not in (journey._get_app_by_ref(app_id).form_data or {})
+        # Valid value so the next required field can be tested
+        sample = {
+            "string": "Sample value ok",
+            "date": "12/04/1995",
+            "mobile": "9876543210",
+            "number": "120000",
+        }.get(field.type, "Sample value ok")
+        ok = journey.handle_message(app_id, token, sample, trace_id="req-empty")
+        assert ok.error != "validation_failed", field.name
 
 
 def test_all_required_fields_captured_moves_to_documents(journey: JourneyService):
@@ -161,6 +220,35 @@ def test_validation_helpers_from_catalogue():
     assert validate_field(income, "-1").ok is False
     assert validate_field(income, "0").ok is True
     assert validate_field(income, "250000").value == 250000
+
+    mobile = service.field_by_name("mobile_number")
+    assert mobile is not None
+    assert validate_field(mobile, "9876543210").value == "9876543210"
+    assert validate_field(mobile, "07204609155").value == "7204609155"
+    assert validate_field(mobile, "09876543210").value == "9876543210"
+    bad = validate_field(mobile, "01234567890")
+    assert bad.ok is False
+    assert "10-digit" in (bad.error or "").lower()
+    unknown_ok = validate_field(mobile, "9123456789")
+    assert unknown_ok.ok is True
+    assert unknown_ok.value == "9123456789"
+
+
+def test_form_capture_leading_zero_mobile_and_no_field_regression(journey: JourneyService):
+    app_id, token = _auth_to_form(journey)
+    journey.handle_message(app_id, token, "Gautam Prakash", trace_id="m")
+    journey.handle_message(app_id, token, "12/08/2000", trace_id="m")
+    bad = journey.handle_message(app_id, token, "12345", trace_id="m")
+    assert bad.error == "validation_failed"
+    assert bad.data.get("field") == "mobile_number"
+    assert journey._get_app_by_ref(app_id).form_data.get("applicant_name") == "Gautam Prakash"
+    assert "mobile_number" not in (journey._get_app_by_ref(app_id).form_data or {})
+
+    ok = journey.handle_message(app_id, token, "07204609155", trace_id="m")
+    assert ok.error != "validation_failed"
+    assert journey._get_app_by_ref(app_id).form_data.get("mobile_number") == "7204609155"
+    assert ok.data.get("next_field") == "address"
+    assert journey._get_app_by_ref(app_id).form_data.get("applicant_name") == "Gautam Prakash"
 
 
 @pytest.mark.asyncio
@@ -328,6 +416,22 @@ def test_seeded_identity_provider_loads():
     persona = provider.find_by_mobile("9876543210")
     assert persona is not None
     assert persona.name == "Lakshmi Devi"
+    assert not hasattr(persona, "language")
+    assert provider.verify_otp("9876543210", "123456").success is True
+
+
+def test_session_language_independent_of_persona(journey: JourneyService):
+    """Language is selected for the application; auth must not overwrite it."""
+    start = journey.start(trace_id="lang-indep")
+    token = start.access_token
+    assert token
+    app_id = start.application_id
+    journey.handle_message(app_id, token, "en", trace_id="lang-indep")
+    journey.handle_message(app_id, token, "9876543210", trace_id="lang-indep")
+    reply = journey.handle_message(app_id, token, "123456", trace_id="lang-indep")
+    assert reply.state == JourneyState.CONSENT.value
+    assert journey._get_app_by_ref(app_id).language == "en"
+    assert journey._get_app_by_ref(app_id).applicant_id == "persona-lakshmi"
 
 
 def test_invalid_transition_during_journey_raises(journey: JourneyService):

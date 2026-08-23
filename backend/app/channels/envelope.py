@@ -8,6 +8,7 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.boundary.classification import Classification, parse_classification
+from app.services.languages import get_language_catalog
 
 
 class Channel(StrEnum):
@@ -46,8 +47,10 @@ class MessageEnvelope(BaseModel):
         if value is None:
             return None
         lang = value.strip().lower()
-        if lang not in {"en", "hi", "te"}:
-            raise ValueError("language must be one of: en, hi, te")
+        catalog = get_language_catalog()
+        if not catalog.is_supported(lang):
+            codes = ", ".join(sorted(catalog.codes))
+            raise ValueError(f"language must be one of: {codes}")
         return lang
 
     @model_validator(mode="after")

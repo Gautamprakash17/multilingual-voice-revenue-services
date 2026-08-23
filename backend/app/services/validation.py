@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from app.services.catalogue import FieldDef
+from app.speech.mobile import normalize_indian_mobile_digits
 
 
 @dataclass
@@ -69,11 +70,11 @@ def validate_field(field: FieldDef, raw: str) -> ValidationResult:
 
     if field.type == "mobile":
         pattern = str(rules.get("pattern", r"^[6-9]\d{9}$"))
-        digits = re.sub(r"[\s\-]", "", text)
+        digits = normalize_indian_mobile_digits(text)
         if not re.fullmatch(pattern, digits):
             return ValidationResult(
                 ok=False,
-                error="Invalid mobile number",
+                error="Please enter a valid 10-digit mobile number.",
                 expected_format="10-digit Indian mobile starting with 6-9",
             )
         return ValidationResult(ok=True, value=digits)

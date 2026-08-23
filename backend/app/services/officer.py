@@ -11,8 +11,10 @@ from sqlalchemy.orm import Session
 from app.boundary.classification import Classification
 from app.core.config import get_settings
 from app.models.application import Application, ConversationSession
+from app.models.audit import AuditEvent
 from app.platform.audit import write_audit_event
 from app.platform.metrics import get_metrics
+from app.services.catalogue import get_service
 from app.services.state_machine import JourneyState, ProcessingStatus, assert_transition
 
 
@@ -39,6 +41,30 @@ class OfficerView:
     fields_present: list[str]
     # Safe metadata only — no storage paths, no raw restricted field values by default
     created_at: str | None
+
+
+@dataclass
+class OfficerHistoryItem:
+    """Summary of a completed officer action — derived from audit + application."""
+
+    application_id: str
+    service_code: str
+    service_display_name: str
+    processing_status: str
+    journey_state: str
+    last_action: str
+    last_action_label: str
+    action_at: str
+    escalated: bool = False
+
+
+# Audit event types that represent completed officer work (newest wins per app).
+_OFFICER_HISTORY_EVENTS: dict[str, str] = {
+    "CERTIFICATE_ISSUED": "Approved and issued",
+    "OFFICER_REJECTED": "Rejected",
+    "OFFICER_ESCALATED": "Escalated",
+    "OFFICER_REQUEST_CORRECTION": "Requested correction",
+}
 
 
 def require_officer(token: str | None) -> str:
@@ -130,6 +156,59 @@ class OfficerService:
             .all()
         )
         return [self._view(a) for a in apps]
+
+    def get_application(self, application_id: str) -> OfficerView:
+        """Load a single application for officer detail (active or historical)."""
+        return self._view(self._get_app(application_id))
+
+    def list_history(self, *, limit: int = 50) -> list[OfficerHistoryItem]:
+        """Officer-completed actions from the append-only audit trail.
+
+        Active queue filters exclude ISSUED/REJECTED — history surfaces those
+        (and other officer actions) from persisted audit events. One row per
+        application, newest qualifying action first.
+        """
+        capped = max(1, min(int(limit), 200))
+        events = (
+            self.db.query(AuditEvent)
+            .filter(AuditEvent.event_type.in_(tuple(_OFFICER_HISTORY_EVENTS)))
+            .order_by(AuditEvent.timestamp.desc())
+            .limit(capped * 8)
+            .all()
+        )
+        seen: set[str] = set()
+        items: list[OfficerHistoryItem] = []
+        for event in events:
+            meta = event.metadata_json or {}
+            ref = meta.get("application_ref")
+            if not isinstance(ref, str) or not ref or ref in seen:
+                continue
+            try:
+                app = self._get_app(ref)
+            except LookupError:
+                continue
+            seen.add(ref)
+            label = _OFFICER_HISTORY_EVENTS.get(event.event_type, event.event_type)
+            try:
+                display = get_service(app.service_code).display_name
+            except KeyError:
+                display = app.service_code
+            items.append(
+                OfficerHistoryItem(
+                    application_id=app.application_id,
+                    service_code=app.service_code,
+                    service_display_name=display,
+                    processing_status=app.processing_status,
+                    journey_state=app.current_state,
+                    last_action=event.event_type,
+                    last_action_label=label,
+                    action_at=event.timestamp.isoformat() if event.timestamp else "",
+                    escalated=bool(app.escalated),
+                )
+            )
+            if len(items) >= capped:
+                break
+        return items
 
     def approve(self, application_id: str, *, actor_id: str, trace_id: str | None) -> OfficerView:
         app = self._get_app(application_id)

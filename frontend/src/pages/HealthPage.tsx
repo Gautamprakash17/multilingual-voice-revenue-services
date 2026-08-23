@@ -36,33 +36,36 @@ export default function HealthPage() {
 
   return (
     <section className="panel">
-      <h1>Platform health</h1>
+      <h1>Service status</h1>
       <p className="lede">
-        Platform connectivity check for the local API and database.
+        Check that the citizen services platform and database are available before starting an
+        application.
       </p>
 
-      {loading && <p className="muted">Checking API…</p>}
+      {loading && <p className="muted">Checking service availability…</p>}
       {error && (
-        <div className="alert error">
-          <strong>API connectivity:</strong> offline — {error}
+        <div className="alert error" role="alert">
+          <strong>Connection:</strong> offline — {error}
         </div>
       )}
 
       {!loading && !error && (
         <div className="grid">
           <article className="card">
-            <h2>API</h2>
-            <StatusBadge label="Connectivity" tone="ok" value="online" />
+            <h2>Application service</h2>
+            <StatusBadge label="Connectivity" tone="ok" value="Online" />
             <StatusBadge
               label="Liveness"
               tone={health?.status === "ok" ? "ok" : "bad"}
               value={health?.status ?? "unknown"}
             />
             <p className="meta">{health?.service}</p>
-            <p className="meta">v{health?.version} · {health?.environment}</p>
+            <p className="meta">
+              Version {health?.version} · {health?.environment}
+            </p>
           </article>
           <article className="card">
-            <h2>Readiness</h2>
+            <h2>System readiness</h2>
             <StatusBadge
               label="Overall"
               tone={readyOk ? "ok" : "warn"}

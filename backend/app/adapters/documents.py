@@ -106,20 +106,20 @@ class MockDocumentVerificationProvider(DocumentVerificationProvider):
             return VerificationResult(
                 outcome=VerificationOutcome.UNREADABLE,
                 provider="mock-doc-verify",
-                reason="Document could not be read",
+                reason="Local POC verification failed: document unreadable.",
             )
         name = (filename or "").lower()
         if "mismatch" in name or ocr.field_hints.get("marker") == "mismatch":
             return VerificationResult(
                 outcome=VerificationOutcome.MISMATCH,
                 provider="mock-doc-verify",
-                reason="Extracted data does not match application fields",
+                reason="Local POC verification failed: details do not match.",
                 matched_fields=[],
             )
         return VerificationResult(
             outcome=VerificationOutcome.VERIFIED,
             provider="mock-doc-verify",
-            reason="Document verified against application metadata",
+            reason="Local POC verification passed.",
             matched_fields=[document_code],
         )
 

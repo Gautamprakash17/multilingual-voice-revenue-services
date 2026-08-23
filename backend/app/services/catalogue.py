@@ -36,6 +36,13 @@ class FeeDef:
 
 
 @dataclass
+class ServiceSelectionConfig:
+    display_names: dict[str, str] = field(default_factory=dict)
+    aliases: dict[str, list[str]] = field(default_factory=dict)
+    spoken_phrases: dict[str, list[str]] = field(default_factory=dict)
+
+
+@dataclass
 class ServiceDefinition:
     service_code: str
     display_name: str
@@ -45,6 +52,7 @@ class ServiceDefinition:
     documents: list[DocumentDef]
     prompts: dict[str, str]
     fee: FeeDef | None = None
+    selection: ServiceSelectionConfig | None = None
 
     def field_by_name(self, name: str) -> FieldDef | None:
         return next((f for f in self.fields if f.name == name), None)
@@ -102,6 +110,20 @@ def load_service_definition(path: Path) -> ServiceDefinition:
             currency=str(fee_raw.get("currency", "INR")),
             description=str(fee_raw.get("description") or ""),
         )
+    selection_raw = raw.get("selection") or {}
+    selection = None
+    if selection_raw:
+        selection = ServiceSelectionConfig(
+            display_names=dict(selection_raw.get("display_names") or {}),
+            aliases={
+                str(lang): list(items or [])
+                for lang, items in (selection_raw.get("aliases") or {}).items()
+            },
+            spoken_phrases={
+                str(lang): list(items or [])
+                for lang, items in (selection_raw.get("spoken_phrases") or {}).items()
+            },
+        )
     return ServiceDefinition(
         service_code=raw["service_code"],
         display_name=raw.get("display_name", raw["service_code"]),
@@ -111,6 +133,7 @@ def load_service_definition(path: Path) -> ServiceDefinition:
         documents=documents,
         prompts=dict(raw.get("prompts") or {}),
         fee=fee,
+        selection=selection,
     )
 
 

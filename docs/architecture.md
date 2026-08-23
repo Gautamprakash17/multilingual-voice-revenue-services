@@ -14,8 +14,8 @@ Architecture for a multilingual, voice-first Revenue Department certificate plat
 - Append-only audit trail and JSON structured logging
 - Income Certificate journey (state machine, mock OTP, consent, form, documents, verification, fee/payment, receipt, review/submit)
 - Channel-agnostic message envelope with Web, WhatsApp simulator, and IVR simulator adapters
-- Multilingual prompts (English, Hindi, Telugu)
-- Local / mock STT, TTS, and rule-based NLU
+- Multilingual prompts (English, Hindi, Kannada)
+- Local faster-whisper STT, **local eSpeak NG TTS** (en / hi / kn; offline; robotic but spoken), and rule-based NLU
 - Cross-channel session resume and lightweight operational metrics
 - Officer review dashboard (approve / reject / request correction / escalate)
 - React/Vite frontend (citizen journey, officer review, channel simulators)

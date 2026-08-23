@@ -27,7 +27,7 @@ Open tabs:
 **Primary demo persona (synthetic):** Lakshmi Devi — mobile `9876543210`, OTP `123456`
 **Officer token:** `officer-poc-token` (header / UI field)
 
-**Document tip:** use any small PDF/JPEG/PNG. For verification failure demos, include `mismatch` or `unreadable` in the filename (see [document samples](./document-samples.md)).
+**Document tip:** use sample files under `config/samples/documents/` (e.g. `identity_proof_ok.pdf`). For verification failure demos, use filenames containing `mismatch` or `unreadable` (local mock OCR — see [document samples](./document-samples.md)).
 
 ---
 
@@ -44,11 +44,11 @@ Open tabs:
 On **Apply** (`/journey`):
 
 1. **Start** application → note `INC-…` id and session.
-2. Select language (**en** / **hi** / **te**).
+2. Select language (**en** English / **hi** हिन्दी / **kn** ಕನ್ನಡ).
 3. Authenticate: mobile `9876543210`, OTP `123456`.
 4. Consent: **I agree**.
 5. Service: `INCOME_CERTIFICATE`.
-6. Fill form fields (guided prompts). Optional: use **voice** with a short spoken answer (mock STT accepts POC voice markers from the UI).
+6. Fill form fields (guided prompts). Optional: use **voice** — local faster-whisper STT; replies are spoken back with **local eSpeak NG TTS** (en/hi/kn; robotic but offline).
 7. Upload three documents: `IDENTITY_PROOF`, `ADDRESS_PROOF`, `INCOME_PROOF` (clean filenames → verified).
 8. Review → **CONFIRM** → fee quote → **PAY** → **PAY** (success).
 9. Show **receipt** text and `UNDER_REVIEW` status in the reply / refresh status.

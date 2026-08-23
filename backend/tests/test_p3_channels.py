@@ -1,4 +1,4 @@
-"""P3 channel / multilingual / speech tests."""
+"""Channel / multilingual / speech tests."""
 
 from __future__ import annotations
 
@@ -30,8 +30,8 @@ from app.services.documents import store_document
 from app.services.i18n import REQUIRED_KEYS, assert_all_keys_present, load_translations, t
 from app.services.journey import JourneyService
 from app.services.state_machine import JourneyState
-from app.speech.language import detect_language, resolve_language
-from app.speech.stt import MockSTTProvider
+from app.speech.language import detect_language, normalize_language_choice, resolve_language
+from app.speech.stt import MockSTTProvider, audio_file_suffix
 from app.speech.tts import MockTTSProvider
 from fastapi import UploadFile
 from pydantic import ValidationError
@@ -122,20 +122,378 @@ def test_ivr_adapter_creates_envelope_dtmf_and_voice():
     assert voice.modality == Modality.VOICE
 
 
-def test_english_hindi_telugu_detection():
+def test_english_hindi_kannada_detection():
     assert detect_language("Hello world").language == "en"
     assert detect_language("मेरा नाम लक्ष्मी है").language == "hi"
-    assert detect_language("నా పేరు లక్ష్మి").language == "te"
+    assert detect_language("ನನ್ನ ಹೆಸರು ಲಕ್ಷ್ಮಿ").language == "kn"
 
 
 def test_low_confidence_language_keeps_selected():
-    guess = resolve_language("12345", "te", min_confidence=0.7)
-    assert guess.language == "te"
+    guess = resolve_language("12345", "kn", min_confidence=0.7)
+    assert guess.language == "kn"
+
+
+def test_normalize_language_choice_natural_names():
+    assert normalize_language_choice("English") == "en"
+    assert normalize_language_choice("english") == "en"
+    assert normalize_language_choice("Hindi") == "hi"
+    assert normalize_language_choice("hindi") == "hi"
+    assert normalize_language_choice("Kannada") == "kn"
+    assert normalize_language_choice("English.") == "en"
+    assert normalize_language_choice("Hindi.") == "hi"
+    assert normalize_language_choice("Kannada.") == "kn"
+    assert normalize_language_choice("  english!  ") == "en"
+    assert normalize_language_choice("kannada") == "kn"
+    assert normalize_language_choice("हिन्दी") == "hi"
+    assert normalize_language_choice("ಕನ್ನಡ") == "kn"
+    assert normalize_language_choice("I would like to go with English") == "en"
+    assert normalize_language_choice("en") == "en"
+    assert normalize_language_choice("French") is None
+
+
+@pytest.mark.parametrize(
+    ("spoken", "code"),
+    [
+        ("English", "en"),
+        ("English.", "en"),
+        ("Hindi", "hi"),
+        ("Hindi.", "hi"),
+        ("Kannada", "kn"),
+        ("Kannada.", "kn"),
+        ("I would like to go with Hindi", "hi"),
+        ("I would like to go with Kannada", "kn"),
+    ],
+)
+def test_voice_language_select_natural_names(
+    orch: ChannelOrchestrator, spoken: str, code: str
+):
+    start = orch.start(channel="web")
+    token = start.access_token
+    assert token
+    reply = orch.process_channel_payload(
+        "web",
+        {
+            "application_id": start.application_id,
+            "access_token": token,
+            "modality": "voice",
+            "language": code,
+            "transcript": spoken,
+        },
+    )
+    assert reply.error != "invalid_language"
+    assert reply.state == JourneyState.AUTHENTICATE.value
+    assert reply.language == code
+    assert reply.transcript == spoken
+
+
+def test_text_language_select_still_works(orch: ChannelOrchestrator):
+    start = orch.start(channel="web")
+    token = start.access_token
+    assert token
+    reply = orch.process_channel_payload(
+        "web",
+        {
+            "application_id": start.application_id,
+            "access_token": token,
+            "modality": "text",
+            "text": "hi",
+            "language": "hi",
+        },
+    )
+    assert reply.state == JourneyState.AUTHENTICATE.value
+    assert reply.language == "hi"
+    assert reply.error != "invalid_language"
+
+
+def test_voice_spoken_mobile_authentication(orch: ChannelOrchestrator):
+    start = orch.start(channel="web")
+    token = start.access_token
+    assert token
+    app_id = start.application_id
+    orch.process_channel_payload(
+        "web",
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "modality": "voice",
+            "language": "en",
+            "transcript": "English.",
+        },
+    )
+    spoken_mobile = "nine, eight, seven, six, five, four, three, two, one, zero"
+    reply = orch.process_channel_payload(
+        "web",
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "modality": "voice",
+            "language": "en",
+            "transcript": spoken_mobile,
+        },
+    )
+    assert reply.error != "unknown_mobile"
+    assert reply.state == JourneyState.AUTHENTICATE.value
+    assert "OTP" in (reply.prompt or "").upper() or "otp" in (reply.prompt or "").lower()
+    assert reply.audio_b64
+
+
+def test_voice_mobile_otp_full_authentication(orch: ChannelOrchestrator):
+    start = orch.start(channel="web")
+    token = start.access_token
+    assert token
+    app_id = start.application_id
+    orch.process_channel_payload(
+        "web",
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "modality": "voice",
+            "language": "en",
+            "transcript": "English",
+        },
+    )
+    mobile_reply = orch.process_channel_payload(
+        "web",
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "modality": "voice",
+            "language": "en",
+            "transcript": "9 8 7 6 5 4 3 2 1 0",
+        },
+    )
+    assert mobile_reply.error != "unknown_mobile"
+    assert mobile_reply.state == JourneyState.AUTHENTICATE.value
+    assert "OTP" in (mobile_reply.prompt or "").upper()
+    otp_reply = orch.process_channel_payload(
+        "web",
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "modality": "text",
+            "language": "en",
+            "text": "123456",
+        },
+    )
+    assert otp_reply.state == JourneyState.CONSENT.value
+    assert otp_reply.error is None
+    assert "unknown_mobile" not in (otp_reply.message or "")
+
+
+@pytest.mark.parametrize(
+    "spoken_otp",
+    [
+        "1 2 3 4 5 6",
+        "one two three four five six",
+        "1, 2, 3, 4, 5, 6",
+    ],
+)
+def test_voice_spoken_otp_normalization(orch: ChannelOrchestrator, spoken_otp: str):
+    start = orch.start(channel="web")
+    token = start.access_token
+    assert token
+    app_id = start.application_id
+    orch.process_channel_payload(
+        "web",
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "modality": "voice",
+            "language": "en",
+            "transcript": "English",
+        },
+    )
+    orch.process_channel_payload(
+        "web",
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "modality": "voice",
+            "language": "en",
+            "transcript": "9876543210",
+        },
+    )
+    otp_reply = orch.process_channel_payload(
+        "web",
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "modality": "voice",
+            "language": "en",
+            "transcript": spoken_otp,
+        },
+    )
+    assert otp_reply.error != "invalid_otp"
+    assert otp_reply.state == JourneyState.CONSENT.value
+    assert otp_reply.transcript == spoken_otp
+    assert "Authenticated" in (otp_reply.message or "")
+
+
+def test_voice_wrong_otp_is_citizen_friendly(orch: ChannelOrchestrator):
+    start = orch.start(channel="web")
+    token = start.access_token
+    assert token
+    app_id = start.application_id
+    orch.process_channel_payload(
+        "web",
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "modality": "text",
+            "text": "en",
+            "language": "en",
+        },
+    )
+    orch.process_channel_payload(
+        "web",
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "modality": "text",
+            "text": "9876543210",
+            "language": "en",
+        },
+    )
+    otp_reply = orch.process_channel_payload(
+        "web",
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "modality": "voice",
+            "language": "en",
+            "transcript": "9 9 9 9 9 9",
+        },
+    )
+    assert otp_reply.error == "invalid_otp"
+    assert otp_reply.state == JourneyState.AUTHENTICATE.value
+    assert "invalid_otp" not in (otp_reply.message or "")
+    assert "incorrect" in (otp_reply.message or "").lower()
+    assert otp_reply.transcript == "9 9 9 9 9 9"
+
+
+def test_voice_invalid_mobile_length_is_citizen_friendly(orch: ChannelOrchestrator):
+    start = orch.start(channel="web")
+    token = start.access_token
+    assert token
+    app_id = start.application_id
+    orch.process_channel_payload(
+        "web",
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "modality": "text",
+            "text": "en",
+            "language": "en",
+        },
+    )
+    reply = orch.process_channel_payload(
+        "web",
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "modality": "voice",
+            "language": "en",
+            "transcript": "7, 2, 0, 4, 6, 0, 9, 1 and the whole 5",
+        },
+    )
+    assert reply.error == "unknown_mobile"
+    assert "unknown_mobile" not in (reply.message or "")
+    assert reply.state == JourneyState.AUTHENTICATE.value
+    assert reply.audio_b64
+
+
+def test_voice_unknown_mobile_is_citizen_friendly(orch: ChannelOrchestrator):
+    start = orch.start(channel="web")
+    token = start.access_token
+    assert token
+    app_id = start.application_id
+    orch.process_channel_payload(
+        "web",
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "modality": "text",
+            "text": "en",
+            "language": "en",
+        },
+    )
+    reply = orch.process_channel_payload(
+        "web",
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "modality": "voice",
+            "language": "en",
+            "transcript": "one two three four five",
+        },
+    )
+    assert reply.error == "unknown_mobile"
+    assert "unknown_mobile" not in (reply.message or "")
+    assert "10-digit" in (reply.message or "").lower() or "10" in (reply.message or "")
+    assert reply.audio_b64
+
+
+def test_voice_dob_capture_still_works(orch: ChannelOrchestrator):
+    start = orch.start(channel="web")
+    token = start.access_token
+    assert token
+    app_id = start.application_id
+    orch.process_channel_payload(
+        "web", {"application_id": app_id, "access_token": token, "text": "en"}
+    )
+    orch.process_channel_payload(
+        "web", {"application_id": app_id, "access_token": token, "text": "9876543210"}
+    )
+    orch.process_channel_payload(
+        "web", {"application_id": app_id, "access_token": token, "text": "123456"}
+    )
+    orch.journey.record_consent(app_id, token, granted=True, trace_id="voice-dob")
+    orch.process_channel_payload(
+        "web",
+        {"application_id": app_id, "access_token": token, "text": "INCOME_CERTIFICATE"},
+    )
+    orch.process_channel_payload(
+        "web",
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "modality": "voice",
+            "language": "en",
+            "transcript": "Gautam Prakash",
+        },
+    )
+    orch.process_channel_payload(
+        "web",
+        {"application_id": app_id, "access_token": token, "text": "YES"},
+    )
+    dob_reply = orch.process_channel_payload(
+        "web",
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "modality": "voice",
+            "language": "en",
+            "transcript": "02/01/2018",
+        },
+    )
+    assert dob_reply.error != "validation_failed"
+    assert dob_reply.state == JourneyState.FIELD_CONFIRMATION.value
+    saved = orch.process_channel_payload(
+        "web",
+        {"application_id": app_id, "access_token": token, "text": "YES"},
+    )
+    assert saved.state == JourneyState.FORM_CAPTURE.value
+    app = orch.journey._get_app_by_ref(app_id)
+    assert app.form_data.get("date_of_birth") == "02/01/2018"
+    assert saved.data.get("form_data", {}).get("date_of_birth") == "02/01/2018"
+    assert dob_reply.transcript == "02/01/2018"
 
 
 def test_translation_keys_exist_for_all_languages():
+    from app.services.i18n import supported_language_codes
+
     missing = assert_all_keys_present()
-    for lang in ("en", "hi", "te"):
+    for lang in supported_language_codes():
         assert missing[lang] == [], f"{lang} missing {missing[lang]}"
         bundle = load_translations(lang)
         for key in REQUIRED_KEYS:
@@ -211,6 +569,54 @@ def test_language_persists_and_localized_response(orch: ChannelOrchestrator):
     assert orch.journey._get_app_by_ref(app_id).language == "hi"
     assert "दर्ज" in (reply.prompt or "") or "OTP" in (reply.prompt or "")
     assert status.application_id == app_id
+    # OTP auth must not couple persona identity to language
+    otp_reply = orch.process_channel_payload(
+        "web",
+        {"application_id": app_id, "access_token": token, "text": "123456"},
+    )
+    assert otp_reply.state == JourneyState.CONSENT.value
+    assert orch.journey._get_app_by_ref(app_id).language == "hi"
+    assert orch.journey._get_app_by_ref(app_id).applicant_id == "persona-lakshmi"
+
+
+def test_voice_language_selection_independent_of_persona(orch: ChannelOrchestrator):
+    start = orch.start(channel="web")
+    token = start.access_token
+    assert token
+    app_id = start.application_id
+    orch.process_channel_payload(
+        "web",
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "modality": "voice",
+            "language": "en",
+            "transcript": "Kannada",
+        },
+    )
+    assert orch.journey._get_app_by_ref(app_id).language == "kn"
+    orch.process_channel_payload(
+        "web",
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "modality": "text",
+            "text": "9876543210",
+            "language": "kn",
+        },
+    )
+    otp_reply = orch.process_channel_payload(
+        "web",
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "modality": "text",
+            "text": "123456",
+            "language": "kn",
+        },
+    )
+    assert otp_reply.state == JourneyState.CONSENT.value
+    assert orch.journey._get_app_by_ref(app_id).language == "kn"
 
 
 def test_cross_channel_session_resume(orch: ChannelOrchestrator):
@@ -418,21 +824,20 @@ def test_json_formatter_redacts_transcript():
     assert "raw words" not in line
 
 
-def test_get_adapter_and_telugu_journey_prompt(orch: ChannelOrchestrator):
+def test_get_adapter_and_kannada_journey_prompt(orch: ChannelOrchestrator):
     assert get_adapter("whatsapp").channel == Channel.WHATSAPP
     start = orch.start(channel="web")
     token = start.access_token
     assert token
     app_id = start.application_id
     orch.process_channel_payload(
-        "web", {"application_id": app_id, "access_token": token, "text": "te"}
+        "web", {"application_id": app_id, "access_token": token, "text": "kn"}
     )
     reply = orch.process_channel_payload(
         "web", {"application_id": app_id, "access_token": token, "text": "9876543210"}
     )
-    # Telugu OTP or mobile prompt
-    assert reply.language == "te" or orch.journey._get_app_by_ref(app_id).language == "te"
-    assert t("auth_otp", "te")
+    assert reply.language == "kn" or orch.journey._get_app_by_ref(app_id).language == "kn"
+    assert t("auth_otp", "kn")
 
 
 def test_metrics_endpoint_store(orch: ChannelOrchestrator):
@@ -446,11 +851,20 @@ def test_metrics_endpoint_store(orch: ChannelOrchestrator):
     ].get("whatsapp", 0)
 
 
+def test_channel_start_includes_welcome_tts(orch: ChannelOrchestrator):
+    reply = orch.start(channel="web")
+    assert reply.state == JourneyState.LANGUAGE_SELECT.value
+    assert reply.audio_b64
+    assert reply.audio_mime == "audio/wav"
+    assert "Welcome" in (reply.message or "")
+    assert "language" in (reply.prompt or "").lower()
+
+
 def test_english_localized_welcome_and_consent_keys():
     assert "Welcome" in t("welcome", "en") or "welcome" in t("welcome", "en").lower()
-    assert "YES" in t("consent", "en")
+    assert "yes" in t("consent", "en").lower()
     assert t("field_annual_income", "hi")
-    assert t("submitted", "te", application_id="INC-1")
+    assert t("submitted", "kn", application_id="INC-1")
 
 
 def test_mock_stt_and_tts_providers():
@@ -458,10 +872,67 @@ def test_mock_stt_and_tts_providers():
     result = stt.transcribe(b"POCSTT:CONFIRM")
     assert result.transcript == "CONFIRM"
     assert result.provider == "mock-stt"
+    empty = stt.transcribe(b"\x00\x01raw-webm-bytes")
+    assert empty.transcript == ""
+    assert empty.confidence == 0.0
     tts = MockTTSProvider()
     audio = tts.synthesize("hello", language="en")
     assert audio.audio_b64
     assert audio.mime_type == "audio/wav"
+
+
+def test_audio_file_suffix_detection():
+    assert audio_file_suffix(b"RIFF\x00\x00\x00WAVE") == ".wav"
+    assert audio_file_suffix(bytes([0x1A, 0x45, 0xDF, 0xA3])) == ".webm"
+    assert audio_file_suffix(b"OggS\x00") == ".ogg"
+    assert audio_file_suffix(b"unknown") == ".wav"
+
+
+def test_voice_raw_audio_without_transcript_is_explicit_stt_failure(
+    orch: ChannelOrchestrator,
+):
+    start = orch.start(channel="web")
+    token = start.access_token
+    assert token
+    app_id = start.application_id
+    raw = base64.b64encode(b"not-a-pocstt-marker-webm").decode()
+    reply = orch.process_channel_payload(
+        "web",
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "modality": "voice",
+            "audio_b64": raw,
+        },
+    )
+    assert reply.error == "stt_unrecognized"
+    assert reply.state == JourneyState.LANGUAGE_SELECT.value
+    assert reply.data.get("stt_provider") == "mock-stt"
+    assert "faster-whisper" in reply.message
+
+
+def test_voice_with_mic_audio_and_typed_transcript_mock_fallback(
+    orch: ChannelOrchestrator,
+):
+    start = orch.start(channel="web")
+    token = start.access_token
+    assert token
+    app_id = start.application_id
+    raw = base64.b64encode(b"fake-webm-bytes").decode()
+    reply = orch.process_channel_payload(
+        "web",
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "modality": "voice",
+            "language": "en",
+            "audio_b64": raw,
+            "transcript": "en",
+        },
+    )
+    assert reply.error != "stt_unrecognized"
+    assert reply.state == JourneyState.AUTHENTICATE.value
+    assert reply.transcript == "en"
 
 
 def test_ivr_confirm_via_speech(orch: ChannelOrchestrator):

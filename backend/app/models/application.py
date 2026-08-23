@@ -51,6 +51,8 @@ class Application(Base):
     consent_granted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     correcting_field: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pending_voice_field: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pending_voice_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     correction_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     auth_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     pending_mobile: Mapped[str | None] = mapped_column(String(20), nullable=True)

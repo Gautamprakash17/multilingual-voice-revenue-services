@@ -1,7 +1,8 @@
-"""Provider abstractions — local default; cloud is a stub only in P1.
+"""Provider abstractions — local default; optional cloud is a no-network stub.
 
-OpenAI / any real cloud provider is OPTIONAL and NOT wired in P1.
-No cloud HTTP calls are made by OptionalCloudProvider.
+LocalProvider processes data in-process. OptionalCloudProvider never opens
+external HTTP connections. Any real cloud integration must only be invoked
+through the Data Boundary Gateway after an explicit policy ALLOW.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from typing import Any
 
 @dataclass
 class ProviderResult:
-    """Structured provider response (no real cloud I/O in P1)."""
+    """Structured provider response (stub makes no external I/O)."""
 
     success: bool
     provider: str
@@ -48,18 +49,17 @@ class LocalProvider(BaseProvider):
 
 
 class OptionalCloudProvider(BaseProvider):
-    """Cloud provider stub for P1.
+    """Optional cloud stub used only after gateway ALLOW.
 
-    Does NOT make any external HTTP calls.
-    Real cloud integrations (e.g. optional OpenAI) may be added later
-    ONLY when invoked through the Data Boundary Gateway.
+    Does not make any external HTTP calls. Records invocations for tests
+    that prove restricted payloads never reach a real cloud client.
     """
 
     name = "cloud-stub"
     call_count: int = 0
 
     def process(self, payload: dict[str, Any], purpose: str) -> ProviderResult:
-        # Intentionally no network I/O in P1.
+        # Intentional: no network I/O in this POC stub.
         self.call_count += 1
         return ProviderResult(
             success=True,

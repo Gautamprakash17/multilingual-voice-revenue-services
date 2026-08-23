@@ -42,6 +42,65 @@ async function parseJourney(res: Response): Promise<JourneyResponse> {
   return body as JourneyResponse;
 }
 
+export type LanguageConfig = {
+  code: string;
+  display_name: string;
+  native_name: string;
+  stt_code: string;
+  tts_code: string;
+};
+
+export type LanguageCatalogResponse = {
+  default: string;
+  languages: LanguageConfig[];
+};
+
+export type ServiceFieldConfig = {
+  name: string;
+  type: string;
+  required: boolean;
+  prompt?: string;
+};
+
+export type ServiceDocumentConfig = {
+  code: string;
+  label: string;
+  required: boolean;
+};
+
+export type ServiceConfig = {
+  code: string;
+  display_name: string;
+  description: string;
+  fee?: {
+    amount_paise: number;
+    currency: string;
+    description?: string;
+  } | null;
+  fields?: ServiceFieldConfig[];
+  documents?: ServiceDocumentConfig[];
+};
+
+export type ServiceCatalogResponse = {
+  services: ServiceConfig[];
+};
+
+export async function fetchLanguages(): Promise<LanguageCatalogResponse> {
+  const res = await fetch(`${API_BASE}/api/v1/languages`);
+  if (!res.ok) {
+    throw new Error(`Language catalog failed (${res.status})`);
+  }
+  return res.json() as Promise<LanguageCatalogResponse>;
+}
+
+export async function fetchServices(): Promise<ServiceCatalogResponse> {
+  const res = await fetch(`${API_BASE}/api/v1/services`);
+  if (!res.ok) {
+    throw new Error(`Service catalog failed (${res.status})`);
+  }
+  return res.json() as Promise<ServiceCatalogResponse>;
+}
+
 export async function fetchHealth(): Promise<HealthResponse> {
   const res = await fetch(`${API_BASE}/api/v1/health`);
   if (!res.ok) {
@@ -211,6 +270,18 @@ export type OfficerApplication = {
   created_at?: string | null;
 };
 
+export type OfficerHistoryItem = {
+  application_id: string;
+  service_code: string;
+  service_display_name: string;
+  processing_status: string;
+  journey_state: string;
+  last_action: string;
+  last_action_label: string;
+  action_at: string;
+  escalated: boolean;
+};
+
 async function officerFetch(
   path: string,
   officerToken: string,
@@ -235,6 +306,29 @@ export async function fetchOfficerQueue(
     throw new Error(body.error?.message || `Officer queue failed (${res.status})`);
   }
   return res.json() as Promise<OfficerApplication[]>;
+}
+
+export async function fetchOfficerHistory(
+  officerToken: string,
+): Promise<OfficerHistoryItem[]> {
+  const res = await officerFetch("/api/v1/officer/history", officerToken);
+  if (!res.ok) {
+    const body = (await res.json()) as { error?: { message?: string } };
+    throw new Error(body.error?.message || `Officer history failed (${res.status})`);
+  }
+  return res.json() as Promise<OfficerHistoryItem[]>;
+}
+
+export async function fetchOfficerApplication(
+  officerToken: string,
+  applicationId: string,
+): Promise<OfficerApplication> {
+  const res = await officerFetch(`/api/v1/officer/${applicationId}`, officerToken);
+  if (!res.ok) {
+    const body = (await res.json()) as { error?: { message?: string } };
+    throw new Error(body.error?.message || `Officer detail failed (${res.status})`);
+  }
+  return res.json() as Promise<OfficerApplication>;
 }
 
 export async function officerAction(

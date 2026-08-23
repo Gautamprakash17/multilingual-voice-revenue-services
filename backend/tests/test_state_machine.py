@@ -1,4 +1,4 @@
-"""P2 state machine tests."""
+"""State machine tests."""
 
 from app.services.state_machine import (
     InvalidTransitionError,
@@ -47,9 +47,14 @@ def test_recovery_transitions():
     assert can_transition(JourneyState.DOCUMENT_REJECTED, JourneyState.DOCUMENT_CAPTURE)
     assert can_transition(JourneyState.REVIEW_CONFIRM, JourneyState.CORRECTION)
     assert can_transition(JourneyState.CORRECTION, JourneyState.FORM_CAPTURE)
+    assert can_transition(JourneyState.FORM_CAPTURE, JourneyState.FIELD_CONFIRMATION)
+    assert can_transition(JourneyState.FIELD_CONFIRMATION, JourneyState.FORM_CAPTURE)
     assert can_transition(JourneyState.FORM_CAPTURE, JourneyState.ESCALATED)
     assert can_transition(JourneyState.PAYMENT, JourneyState.PAYMENT_FAILED)
     assert can_transition(JourneyState.PAYMENT_FAILED, JourneyState.PAYMENT)
+    assert can_transition(JourneyState.FEE_QUOTE, JourneyState.REVIEW_CONFIRM)
+    assert can_transition(JourneyState.PAYMENT, JourneyState.FEE_QUOTE)
+    assert can_transition(JourneyState.PAYMENT_FAILED, JourneyState.FEE_QUOTE)
 
 
 def test_submitted_limits_outgoing_edges():

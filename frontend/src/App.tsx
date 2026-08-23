@@ -11,24 +11,26 @@ export default function App() {
     <div className="app-shell">
       <header className="topbar">
         <div className="brand">
-          <span className="brand-mark">RV</span>
+          <span className="brand-mark" aria-hidden="true">
+            RV
+          </span>
           <div>
             <strong>Revenue Voice Services</strong>
-            <p>Hackathon POC — Multilingual Voice</p>
+            <p>Multilingual Citizen Services</p>
           </div>
         </div>
-        <nav>
+        <nav aria-label="Main">
           <NavLink to="/" end>
-            Health
+            Home
           </NavLink>
           <NavLink to="/journey">Apply</NavLink>
           <NavLink to="/officer">Officer</NavLink>
-          <NavLink to="/whatsapp">WhatsApp Sim</NavLink>
-          <NavLink to="/ivr">IVR Sim</NavLink>
+          <NavLink to="/whatsapp">WhatsApp Simulator</NavLink>
+          <NavLink to="/ivr">IVR Simulator</NavLink>
           <NavLink to="/placeholders">Surfaces</NavLink>
         </nav>
       </header>
-      <main>
+      <main id="main-content">
         <Routes>
           <Route path="/" element={<HealthPage />} />
           <Route path="/journey" element={<JourneyPage />} />
@@ -39,7 +41,7 @@ export default function App() {
         </Routes>
       </main>
       <footer>
-        Data sovereignty first · Local-first voice/NLU · Channel-agnostic envelope
+        Official-style POC · Data stays local · Voice and text citizen services
       </footer>
     </div>
   );

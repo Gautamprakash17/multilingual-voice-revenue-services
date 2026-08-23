@@ -1,17 +1,17 @@
 const SURFACES = [
   {
     title: "Citizen",
-    blurb: "Voice + text certificate journey on the Apply page.",
+    blurb: "Voice and text certificate applications on the Apply page.",
     status: "Available",
   },
   {
     title: "Channel Simulator",
-    blurb: "WhatsApp and IVR simulators behind realistic adapters.",
+    blurb: "WhatsApp and IVR simulators using the same service journey.",
     status: "Available",
   },
   {
     title: "Officer Dashboard",
-    blurb: "Queue, approve, reject, request correction, and escalate with RBAC.",
+    blurb: "Queue, approve, reject, request correction, and escalate.",
     status: "Available",
   },
 ];
@@ -19,9 +19,9 @@ const SURFACES = [
 export default function PlaceholdersPage() {
   return (
     <section className="panel">
-      <h1>Application surfaces</h1>
+      <h1>Service surfaces</h1>
       <p className="lede">
-        Overview of product surfaces in this POC, including citizen apply and officer review.
+        Overview of citizen, channel, and officer surfaces available in this demonstration.
       </p>
       <div className="grid three">
         {SURFACES.map((surface) => (

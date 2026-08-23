@@ -11,6 +11,7 @@ class JourneyState(StrEnum):
     CONSENT = "CONSENT"
     SERVICE_SELECT = "SERVICE_SELECT"
     FORM_CAPTURE = "FORM_CAPTURE"
+    FIELD_CONFIRMATION = "FIELD_CONFIRMATION"
     DOCUMENT_CAPTURE = "DOCUMENT_CAPTURE"
     REVIEW_CONFIRM = "REVIEW_CONFIRM"
     FEE_QUOTE = "FEE_QUOTE"
@@ -54,11 +55,15 @@ ALLOWED_TRANSITIONS: dict[JourneyState, frozenset[JourneyState]] = {
     ),
     JourneyState.FORM_CAPTURE: frozenset(
         {
+            JourneyState.FIELD_CONFIRMATION,
             JourneyState.DOCUMENT_CAPTURE,
             JourneyState.CORRECTION,
             JourneyState.ESCALATED,
             JourneyState.REVIEW_CONFIRM,
         }
+    ),
+    JourneyState.FIELD_CONFIRMATION: frozenset(
+        {JourneyState.FORM_CAPTURE, JourneyState.ESCALATED}
     ),
     JourneyState.DOCUMENT_CAPTURE: frozenset(
         {
@@ -80,12 +85,18 @@ ALLOWED_TRANSITIONS: dict[JourneyState, frozenset[JourneyState]] = {
         }
     ),
     JourneyState.FEE_QUOTE: frozenset(
-        {JourneyState.PAYMENT, JourneyState.CORRECTION, JourneyState.ESCALATED}
+        {
+            JourneyState.PAYMENT,
+            JourneyState.CORRECTION,
+            JourneyState.REVIEW_CONFIRM,
+            JourneyState.ESCALATED,
+        }
     ),
     JourneyState.PAYMENT: frozenset(
         {
             JourneyState.SUBMITTED,
             JourneyState.PAYMENT_FAILED,
+            JourneyState.FEE_QUOTE,
             JourneyState.ESCALATED,
         }
     ),
@@ -109,6 +120,7 @@ NORMAL_CONVERSATIONAL_STATES = frozenset(
         JourneyState.CONSENT,
         JourneyState.SERVICE_SELECT,
         JourneyState.FORM_CAPTURE,
+        JourneyState.FIELD_CONFIRMATION,
         JourneyState.DOCUMENT_CAPTURE,
         JourneyState.REVIEW_CONFIRM,
         JourneyState.FEE_QUOTE,

@@ -4,22 +4,26 @@ All personas are **synthetic**. They are not real citizens. OTPs are fixed for r
 
 Source: `config/seed/personas.yaml` (loaded by `MockIdentityProvider`).
 
+Language is selected per session/application (not stored on the persona). The same citizen credentials can be used with English, Hindi, or Kannada.
+
 ## Personas
 
-| Persona ID | Name | Mobile | OTP | Preferred language |
-|------------|------|--------|-----|--------------------|
-| persona-lakshmi | Lakshmi Devi | 9876543210 | 123456 | te |
-| persona-ramesh | Ramesh Kumar | 9123456780 | 654321 | hi |
-| persona-anita | Anita Sharma | 9988776655 | 112233 | en |
+| Persona ID | Name | Mobile | OTP |
+|------------|------|--------|-----|
+| persona-lakshmi | Lakshmi Devi | 9876543210 | 123456 |
+| persona-ramesh | Ramesh Kumar | 9123456780 | 654321 |
+| persona-anita | Anita Sharma | 9988776655 | 112233 |
+| persona-Gautam | Gautam Prakash | 7204609155 | 123456 |
 
 ## Languages
 
-Prompt bundles: `config/i18n/{en,hi,te}.yaml`
-Service languages: `config/services/income_certificate.yaml` → `en`, `hi`, `te`.
+Prompt bundles: `config/i18n/{en,hi,kn}.yaml`
+Catalog: `config/languages.yaml`
+Service languages: `config/services/income_certificate.yaml` → `en`, `hi`, `kn`.
 
 ## Sample conversational script (Income Certificate, English)
 
-Use Lakshmi’s credentials even when speaking English for demo simplicity.
+Use Lakshmi’s credentials with any selected language for demo simplicity.
 
 | Step | Citizen input | Expected system behaviour |
 |------|---------------|---------------------------|
@@ -36,9 +40,9 @@ Use Lakshmi’s credentials even when speaking English for demo simplicity.
 | Pay | `PAY` | Submitted + receipt |
 | Status | Refresh / STATUS | `UNDER_REVIEW` / receipt id |
 
-### Hindi / Telugu
+### Hindi / Kannada
 
-Select `hi` or `te` at language select. Prompts switch via i18n bundles. Field validation rules remain the same (catalogue-driven).
+Select `hi` or `kn` at language select. Prompts switch via i18n bundles. Field validation rules remain the same (catalogue-driven). Authentication identity is unchanged.
 
 ### Voice (web)
 

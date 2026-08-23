@@ -1,6 +1,8 @@
-# Provider configuration — P1 foundation.
-# Cloud AI is optional and disabled by default.
-# No OpenAI (or other cloud) dependency is required for P1.
+# Local-first provider topology for the POC.
+# Cloud AI is disabled. Restricted data is never sent to cloud providers.
+# Runtime wiring: get_stt_provider / get_tts_provider / get_nlu_provider
+# with PROVIDER_MODE=local and CLOUD_AI_ENABLED=false; cloud paths remain
+# gated by the Data Boundary Gateway.
 
 version: "1"
 
@@ -8,17 +10,14 @@ default_mode: local
 
 providers:
   stt:
-    local: faster-whisper  # planned for P2; not wired in P1
-    cloud: null            # optional; gated by Data Boundary Gateway
+    local: faster-whisper
+    cloud: null
   tts:
-    local: pre-recorded    # planned for P2
+    local: espeak-ng
     cloud: null
   nlu:
-    local: rules           # planned for P2
+    local: rules
     cloud: null
 
 cloud_ai:
   enabled: false
-  # OpenAI is OPTIONAL and not configured in P1.
-  # openai:
-  #   api_key: "${OPENAI_API_KEY}"  # never commit real keys

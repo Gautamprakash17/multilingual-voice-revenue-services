@@ -17,15 +17,62 @@ from app.boundary.gateway import DataBoundaryGateway, GatewayRequest
 from app.channels.adapters import get_adapter
 from app.channels.envelope import MessageEnvelope, Modality, validate_envelope
 from app.models.application import Application, ConversationSession
+from app.nlu.consent import parse_consent_response
 from app.nlu.provider import NLUProvider, get_nlu_provider
 from app.platform.audit import write_audit_event
 from app.platform.metrics import get_metrics, timed_ms
-from app.services.i18n import field_prompt, t
+from app.services.i18n import (
+    document_label,
+    document_next_prompt,
+    document_reupload_prompt,
+    field_prompt,
+    language_select_prompt,
+    t,
+)
 from app.services.journey import JourneyReply, JourneyService
+from app.services.languages import get_language_catalog
 from app.services.state_machine import JourneyState
-from app.speech.language import resolve_language
+from app.speech.digits import (
+    DIGIT_SPEECH_CONFIRM_FIELDS,
+    speech_value_for_confirmation,
+)
+from app.speech.language import resolve_language, resolve_language_choice
 from app.speech.stt import STTProvider, decode_audio_b64, get_stt_provider
 from app.speech.tts import TTSProvider, get_tts_provider
+
+_PAYMENT_STATES = frozenset(
+    {
+        JourneyState.FEE_QUOTE.value,
+        JourneyState.PAYMENT.value,
+        JourneyState.PAYMENT_FAILED.value,
+    }
+)
+
+# Errors a citizen can recover from by speaking again — the re-prompt must be spoken,
+# otherwise a voice-only caller is left with silence.
+_SPEAK_ON_ERROR = frozenset(
+    {
+        "unknown_mobile",
+        "invalid_otp",
+        "validation_failed",
+        "invalid_language",
+        "language_ambiguous",
+        "consent_unclear",
+        "unknown_service",
+        "service_select_ambiguous",
+        "reply_CONFIRM_or_CORRECT",
+        "reply_PAY_or_CORRECT",
+        "payment_failed",
+        "payment_timeout",
+    }
+)
+
+
+def _fee_display(reply: JourneyReply) -> tuple[str, str]:
+    fee = (reply.data or {}).get("fee") or {}
+    amount_paise = fee.get("amount_paise") or 0
+    currency = fee.get("currency") or "INR"
+    return f"{amount_paise / 100:.2f}", str(currency)
 
 
 @dataclass
@@ -106,6 +153,11 @@ class ChannelOrchestrator:
         text = envelope.text_payload()
         transcript_for_client: str | None = None
         if envelope.modality == Modality.VOICE:
+            stt_result = None
+            catalog = get_language_catalog()
+            language_hint = catalog.stt_code(envelope.language or app.language) or (
+                envelope.language or app.language
+            )
             self._audit(
                 "VOICE_INPUT_RECEIVED",
                 trace_id=envelope.trace_id,
@@ -127,19 +179,24 @@ class ChannelOrchestrator:
                     audio = decode_audio_b64(str(envelope.content["audio_b64"]))
                     # Prove restricted audio cannot go to cloud
                     self._assert_no_cloud("stt", envelope.trace_id)
-                    stt = self.stt.transcribe(audio, language_hint=app.language)
-                    text = stt.transcript
-                    transcript_for_client = text
-                    metrics.record_stt(True, timed_ms() - t0)
+                    stt_result = self.stt.transcribe(audio, language_hint=language_hint)
+                    text = (stt_result.transcript or "").strip()
+                    transcript_for_client = text or None
+                    if text:
+                        metrics.record_stt(True, timed_ms() - t0)
+                    else:
+                        metrics.record_stt(False, timed_ms() - t0)
                     self._audit(
                         "STT_COMPLETED",
                         trace_id=envelope.trace_id,
                         metadata={
-                            "provider": stt.provider,
-                            "confidence": stt.confidence,
-                            "language": stt.language,
+                            "provider": stt_result.provider,
+                            "confidence": stt_result.confidence,
+                            "language": stt_result.language or language_hint,
                             "application_ref": app.application_id,
                             "transcript_chars": len(text),
+                            "recognized": bool(text),
+                            "audio_bytes": len(audio),
                         },
                     )
                 except Exception:
@@ -149,15 +206,55 @@ class ChannelOrchestrator:
                 metrics.record_stt(False)
                 raise ValueError("voice input missing audio/transcript")
 
+            if not (text or "").strip():
+                lang = envelope.language or app.language or "en"
+                provider = stt_result.provider if stt_result else self.stt.name
+                if provider == "mock-stt":
+                    message = (
+                        "Your voice was recorded locally, but live speech recognition needs "
+                        "the local STT model (faster-whisper). Type your reply and press Send, "
+                        "or type your words first and press Speak for the mock fallback."
+                    )
+                else:
+                    message = (
+                        "I couldn't understand the recording. Please speak clearly in your "
+                        "selected language and try again."
+                    )
+                return ChannelReply(
+                    application_id=app.application_id,
+                    state=app.current_state,
+                    message=message,
+                    prompt=self._prompt_for_state(app, lang),
+                    language=lang,
+                    channel=envelope.channel.value,
+                    transcript=None,
+                    error="stt_unrecognized",
+                    data={
+                        "stt_mode": "unrecognized",
+                        "stt_provider": provider,
+                        "language_hint": language_hint,
+                        "recovery": "retry_or_type",
+                    },
+                )
+
         # Language resolution — do not silently switch on low confidence
         lang_guess = resolve_language(text, app.language)
         language = lang_guess.language
-        if app.language is None and language:
+        if (
+            app.language is None
+            and language
+            and JourneyState(app.current_state) != JourneyState.LANGUAGE_SELECT
+        ):
             app.language = language
 
         # NLU (local)
         expected = None
-        if JourneyState(app.current_state) in {
+        current_state = JourneyState(app.current_state)
+        if current_state == JourneyState.FIELD_CONFIRMATION:
+            expected = "__field_confirm__"
+        elif current_state == JourneyState.CONSENT:
+            expected = "__consent__"
+        elif current_state in {
             JourneyState.FORM_CAPTURE,
             JourneyState.CORRECTION,
         }:
@@ -177,12 +274,19 @@ class ChannelOrchestrator:
         )
 
         # Map NLU / DTMF into journey text without logging raw content
-        journey_text = self._to_journey_text(text, nlu, envelope, expected)
+        journey_text = self._to_journey_text(
+            text, nlu, envelope, expected, app.current_state
+        )
+        if JourneyState(app.current_state) == JourneyState.LANGUAGE_SELECT:
+            choice = resolve_language_choice(journey_text)
+            if choice.code:
+                journey_text = choice.code
         reply = self.journey.handle_message(
             app.application_id,
             session.access_token,
             journey_text,
             trace_id=envelope.trace_id,
+            input_modality=envelope.modality.value,
         )
         if reply.state == JourneyState.ESCALATED.value:
             metrics.record_escalation()
@@ -192,9 +296,19 @@ class ChannelOrchestrator:
         audio_b64 = None
         audio_mime = None
         speak = localized.prompt or localized.message
-        if speak and envelope.modality in {Modality.VOICE, Modality.DTMF}:
+        tts_on_error = localized.error in _SPEAK_ON_ERROR
+        if tts_on_error and localized.message and localized.message != speak:
+            # Say what went wrong before repeating the question.
+            speak = f"{localized.message} {speak}".strip()
+        # TTS-only: speak mobile/OTP confirmations digit-by-digit; UI keeps compact digits.
+        speak = self._speak_text_for_tts(localized, speak, app.language or language)
+        if speak and (not localized.error or tts_on_error):
             self._assert_no_cloud("tts", envelope.trace_id)
-            tts = self.tts.synthesize(speak, language=app.language or language or "en")
+            catalog = get_language_catalog()
+            tts_lang = catalog.tts_code(app.language or language or catalog.default_code)
+            tts = self.tts.synthesize(
+                speak, language=tts_lang or catalog.default_code
+            )
             audio_b64 = tts.audio_b64
             audio_mime = tts.mime_type
             self._audit(
@@ -288,16 +402,57 @@ class ChannelOrchestrator:
     def start(self, channel: str = "web", trace_id: str | None = None) -> ChannelReply:
         reply = self.journey.start(channel=channel, trace_id=trace_id)
         self.metrics.record_session(channel, None)
+        welcome = t("welcome", "en")
+        prompt = language_select_prompt("en")
+        speak = f"{welcome} {prompt}".strip()
+        audio_b64 = None
+        audio_mime = None
+        if speak:
+            self._assert_no_cloud("tts", trace_id)
+            tts = self.tts.synthesize(speak, language="en")
+            audio_b64 = tts.audio_b64
+            audio_mime = tts.mime_type
+            self._audit(
+                "TTS_COMPLETED",
+                trace_id=trace_id,
+                metadata={
+                    "provider": tts.provider,
+                    "text_hash": tts.text_hash,
+                    "duration_ms": tts.duration_ms,
+                    "phase": "welcome",
+                },
+            )
         return ChannelReply(
             application_id=reply.application_id,
             state=reply.state,
-            message=t("welcome", "en"),
-            prompt=t("language_select", "en"),
+            message=welcome,
+            prompt=prompt,
             access_token=reply.access_token,
             language=None,
             channel=channel,
             data=reply.data,
+            audio_b64=audio_b64,
+            audio_mime=audio_mime,
         )
+
+    def _speak_text_for_tts(
+        self,
+        reply: JourneyReply,
+        speak: str | None,
+        language: str | None,
+    ) -> str | None:
+        """Adjust confirmation speech for digit fields without changing UI copy."""
+        if not speak or reply.state != JourneyState.FIELD_CONFIRMATION.value:
+            return speak
+        field = (reply.data or {}).get("field")
+        if field not in DIGIT_SPEECH_CONFIRM_FIELDS:
+            return speak
+        value = (reply.data or {}).get("proposed_value")
+        if value is None or value == "":
+            return speak
+        lang = language or "en"
+        spoken_value = speech_value_for_confirmation(str(field), str(value))
+        return t("field_confirm_heard", lang, value=spoken_value)
 
     def _to_journey_text(
         self,
@@ -305,9 +460,48 @@ class ChannelOrchestrator:
         nlu: Any,
         envelope: MessageEnvelope,
         expected: str | None,
+        current_state: str,
     ) -> str:
         if envelope.modality == Modality.DTMF:
             return str(envelope.content.get("dtmf") or text)
+        if current_state == JourneyState.FIELD_CONFIRMATION.value:
+            if nlu.intent == "CONSENT":
+                return "YES" if nlu.slots.get("granted") else "NO"
+            return text
+        if current_state == JourneyState.CONSENT.value:
+            if nlu.intent == "CONSENT":
+                return "YES" if nlu.slots.get("granted") else "NO"
+            decision = parse_consent_response(text)
+            if decision is True:
+                return "YES"
+            if decision is False:
+                return "NO"
+            return text
+        # Localized affirmatives ("हाँ", "ಹೌದು") must drive the same journey commands as
+        # the English tester tokens, which still pass through untouched below.
+        affirmative = (
+            nlu.intent == "CONFIRM"
+            or (nlu.intent == "CONSENT" and bool(nlu.slots.get("granted")))
+            # Reuse the shared yes/no parser so "yes please" works everywhere, not
+            # only where the NLU has an exact-match intent.
+            or parse_consent_response(text) is True
+        )
+        if current_state == JourneyState.SERVICE_SELECT.value and affirmative:
+            return "YES"
+        if current_state == JourneyState.REVIEW_CONFIRM.value:
+            if nlu.intent == "CORRECT":
+                return "CORRECT"
+            if affirmative:
+                return "CONFIRM"
+            return text
+        if current_state in _PAYMENT_STATES:
+            if nlu.intent == "CANCEL":
+                return "CANCEL"
+            if nlu.intent == "CORRECT":
+                return "CORRECT"
+            if affirmative:
+                return "PAY"
+            return text
         if nlu.intent == "CONFIRM":
             return "CONFIRM"
         if nlu.intent == "CORRECT":
@@ -333,12 +527,13 @@ class ChannelOrchestrator:
 
     def _localize_reply(self, reply: JourneyReply, language: str | None) -> JourneyReply:
         lang = language or "en"
+        language_list = get_language_catalog().format_language_list()
         # Overlay known prompts
         state = reply.state
         prompt = reply.prompt
         message = reply.message
         if state == JourneyState.LANGUAGE_SELECT.value:
-            prompt = t("language_select", lang)
+            prompt = language_select_prompt(lang)
             message = t("welcome", lang)
         elif state == JourneyState.AUTHENTICATE.value:
             if reply.prompt and "OTP" in (reply.prompt or "").upper():
@@ -352,27 +547,54 @@ class ChannelOrchestrator:
             prompt = t("service_select", lang)
         elif state == JourneyState.FORM_CAPTURE.value:
             nxt = (reply.data or {}).get("next_field")
+            if not nxt and reply.error == "validation_failed":
+                nxt = (reply.data or {}).get("field")
             if nxt:
                 prompt = field_prompt(str(nxt), lang)
+        elif state == JourneyState.FIELD_CONFIRMATION.value:
+            field = (reply.data or {}).get("field")
+            value = (reply.data or {}).get("proposed_value", "")
+            if value:
+                message = t("field_confirm_heard", lang, value=value)
+                prompt = message
+            elif field:
+                prompt = field_prompt(str(field), lang)
         elif state == JourneyState.DOCUMENT_CAPTURE.value:
             missing = (reply.data or {}).get("missing_documents") or []
+            service = self.journey.service
             if missing:
-                prompt = t("document_next", lang, code=missing[0])
+                prompt = document_next_prompt(missing[0], service, lang)
             else:
+                prompt = t("document_prompt", lang)
+            if reply.message and "stored" in reply.message.lower():
+                message = t("document_stored", lang)
+        elif state == JourneyState.DOCUMENT_REJECTED.value:
+            service = self.journey.service
+            doc_code = (reply.data or {}).get("document_code")
+            missing = (reply.data or {}).get("missing_documents") or []
+            if reply.error == "document_verification_failed" and doc_code:
+                name = document_label(doc_code, service, lang)
+                message = t("document_verification_failed", lang, document_name=name)
+                prompt = document_reupload_prompt(doc_code, service, lang)
+            elif missing:
+                prompt = document_next_prompt(missing[0], service, lang)
+            else:
+                message = t("document_rejected", lang)
                 prompt = t("document_prompt", lang)
         elif state == JourneyState.REVIEW_CONFIRM.value:
             prompt = t("review_intro", lang)
             message = t("review_intro", lang)
         elif state == JourneyState.FEE_QUOTE.value:
-            fee = (reply.data or {}).get("fee") or {}
-            prompt = reply.prompt or "Reply PAY to continue"
-            message = reply.message or f"Fee: {fee.get('display', '')}"
+            amount, currency = _fee_display(reply)
+            message = t("fee_quote", lang, amount=amount, currency=currency)
+            prompt = message
         elif state == JourneyState.PAYMENT.value:
-            prompt = reply.prompt or "Reply PAY / FAIL / TIMEOUT"
-            message = reply.message or prompt
+            amount, currency = _fee_display(reply)
+            message = t("payment_prompt", lang, amount=amount, currency=currency)
+            prompt = message
         elif state == JourneyState.PAYMENT_FAILED.value:
-            prompt = reply.prompt or "Reply RETRY"
-            message = reply.message or "Payment failed. Reply RETRY."
+            message = t("payment_failed", lang)
+            prompt = message
         elif state == JourneyState.CORRECTION.value:
             prompt = t("correction_which", lang)
         elif state == JourneyState.SUBMITTED.value:
@@ -380,9 +602,31 @@ class ChannelOrchestrator:
         elif state == JourneyState.ESCALATED.value:
             message = t("escalation", lang)
         if reply.error == "validation_failed":
-            message = t("validation_failed", lang)
+            field = (reply.data or {}).get("field")
+            if field == "mobile_number":
+                message = t("validation_mobile_invalid", lang)
+            else:
+                message = t("validation_failed", lang)
         if reply.error == "consent_declined":
             message = t("consent_declined", lang)
+        if reply.error == "unknown_mobile":
+            message = t("auth_mobile_unrecognized", lang)
+            prompt = t("auth_mobile", lang)
+        if reply.error == "invalid_otp":
+            message = t("auth_otp_incorrect", lang)
+            prompt = t("auth_otp", lang)
+        if reply.error == "invalid_language":
+            message = t("language_unsupported", lang, language_list=language_list)
+            prompt = language_select_prompt(lang)
+        if reply.error == "language_ambiguous":
+            message = t("language_ambiguous", lang, language_list=language_list)
+            prompt = language_select_prompt(lang)
+        if reply.error == "unknown_service":
+            message = t("service_select_unknown", lang)
+            prompt = t("service_select", lang)
+        if reply.error == "service_select_ambiguous":
+            message = t("service_select_ambiguous", lang)
+            prompt = t("service_select", lang)
         return JourneyReply(
             application_id=reply.application_id,
             state=reply.state,
@@ -397,7 +641,7 @@ class ChannelOrchestrator:
     def _prompt_for_state(self, app: Application, lang: str) -> str:
         state = JourneyState(app.current_state)
         if state == JourneyState.LANGUAGE_SELECT:
-            return t("language_select", lang)
+            return language_select_prompt(lang)
         if state == JourneyState.AUTHENTICATE:
             return t("auth_mobile", lang)
         if state == JourneyState.CONSENT:
@@ -407,6 +651,11 @@ class ChannelOrchestrator:
         if state == JourneyState.FORM_CAPTURE:
             nxt = self.journey._next_missing_field(app)
             return field_prompt(nxt, lang) if nxt else t("form_complete", lang)
+        if state == JourneyState.FIELD_CONFIRMATION:
+            if app.pending_voice_value:
+                return t("field_confirm_heard", lang, value=app.pending_voice_value)
+            field = app.pending_voice_field
+            return field_prompt(field, lang) if field else t("form_complete", lang)
         if state == JourneyState.DOCUMENT_CAPTURE:
             return t("document_prompt", lang)
         if state == JourneyState.REVIEW_CONFIRM:

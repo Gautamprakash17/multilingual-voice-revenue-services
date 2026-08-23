@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import base64
-import hashlib
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from functools import lru_cache
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -27,6 +30,23 @@ class STTProvider(ABC):
         """Transcribe audio locally. Never send to cloud."""
 
 
+def audio_file_suffix(audio_bytes: bytes) -> str:
+    """Pick a temp-file suffix so decoders (faster-whisper/ffmpeg) can read the payload."""
+    if len(audio_bytes) >= 4 and audio_bytes[:4] == b"RIFF":
+        return ".wav"
+    if len(audio_bytes) >= 4 and audio_bytes[:4] == b"fLaC":
+        return ".flac"
+    if len(audio_bytes) >= 3 and audio_bytes[:3] == b"ID3":
+        return ".mp3"
+    if len(audio_bytes) >= 2 and audio_bytes[:2] in {b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"}:
+        return ".mp3"
+    if len(audio_bytes) >= 4 and audio_bytes[:4] == b"OggS":
+        return ".ogg"
+    if len(audio_bytes) >= 4 and audio_bytes[:4] == bytes([0x1A, 0x45, 0xDF, 0xA3]):
+        return ".webm"
+    return ".wav"
+
+
 class MockSTTProvider(STTProvider):
     """Deterministic POC STT — maps audio hash / embedded markers to phrases.
 
@@ -36,16 +56,6 @@ class MockSTTProvider(STTProvider):
     """
 
     name = "mock-stt"
-
-    # Demo phrases keyed by short markers embedded in synthetic audio
-    _PHRASES = {
-        "en_name": "Lakshmi Devi",
-        "en_yes": "YES",
-        "en_confirm": "CONFIRM",
-        "hi_yes": "हाँ",
-        "te_yes": "అవును",
-        "income": "120000",
-    }
 
     def transcribe(
         self, audio_bytes: bytes, *, language_hint: str | None = None
@@ -63,12 +73,11 @@ class MockSTTProvider(STTProvider):
                 confidence=0.92,
                 provider=self.name,
             )
-        digest = hashlib.sha256(audio_bytes).hexdigest()[:8]
-        # Stable fake transcript for unknown audio (never empty for non-empty input)
+        # Without a local ASR model, raw mic bytes cannot be transcribed.
         return STTResult(
-            transcript=f"audio-{digest}",
+            transcript="",
             language=language_hint or "en",
-            confidence=0.4,
+            confidence=0.0,
             provider=self.name,
         )
 
@@ -86,6 +95,7 @@ class LocalSTTProvider(STTProvider):
             self._backend = WhisperSTTProvider()
             self.name = "faster-whisper"
         except Exception:
+            logger.info("faster-whisper unavailable; using mock-stt fallback")
             self._backend = MockSTTProvider()
             self.name = "mock-stt"
 
@@ -111,18 +121,37 @@ class WhisperSTTProvider(STTProvider):
         import tempfile
         from pathlib import Path
 
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        if not audio_bytes or len(audio_bytes) < 64:
+            return STTResult(
+                transcript="",
+                language=language_hint,
+                confidence=0.0,
+                provider=self.name,
+            )
+
+        suffix = audio_file_suffix(audio_bytes)
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp.write(audio_bytes)
             path = Path(tmp.name)
         try:
             segments, info = self._model.transcribe(
-                str(path), language=language_hint or None
+                str(path),
+                language=language_hint or None,
+                vad_filter=True,
             )
             text = " ".join(seg.text.strip() for seg in segments).strip()
             return STTResult(
                 transcript=text,
                 language=getattr(info, "language", language_hint),
-                confidence=0.8,
+                confidence=0.8 if text else 0.0,
+                provider=self.name,
+            )
+        except Exception:
+            logger.exception("faster-whisper transcription failed")
+            return STTResult(
+                transcript="",
+                language=language_hint,
+                confidence=0.0,
                 provider=self.name,
             )
         finally:
@@ -133,5 +162,6 @@ def decode_audio_b64(audio_b64: str) -> bytes:
     return base64.b64decode(audio_b64)
 
 
+@lru_cache
 def get_stt_provider() -> STTProvider:
     return LocalSTTProvider()

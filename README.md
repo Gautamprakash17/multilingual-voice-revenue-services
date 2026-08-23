@@ -24,7 +24,7 @@ A **modular monolith** that:
 | One complete certificate journey (Income Certificate) | Multiple live production certificate types |
 | Mock OTP, payment, OCR/verification | Real Aadhaar / UPI / treasury accounts |
 | WhatsApp & IVR **simulators** | Live Meta WhatsApp / PSTN |
-| Local/mock STT, TTS, rule NLU | Cloud LLM on restricted data |
+| Local faster-whisper STT + eSpeak NG TTS + rule NLU | Cloud LLM / cloud TTS on restricted data |
 | Lightweight metrics + audit | Kubernetes, ELK, Grafana |
 | Officer dashboard with shared POC token | Enterprise IdP |
 
@@ -42,15 +42,15 @@ Details: [docs/LIMITATIONS.md](docs/LIMITATIONS.md) · Coverage: [docs/REQUIREME
 | Mock OTP authentication | Synthetic personas only |
 | Consent | Required before form capture |
 | Form capture + validation | Catalogue YAML rules |
-| Document upload + verification | Local store; mock OCR (`VERIFIED` / `MISMATCH` / `UNREADABLE`) |
+| Document upload + verification | Local store; mock OCR filename markers (`VERIFIED` / `MISMATCH` / `UNREADABLE`) — not content matching |
 | Fee quote + payment | Mock `SUCCESS` / `FAILURE` / `TIMEOUT` + retry |
 | Receipt | Local plain-text receipt |
 | Officer review | Approve / reject / request correction / escalate (RBAC token) |
 | Status + correction | Citizen + officer paths |
-| Multilingual | English, Hindi, Telugu |
+| Multilingual | English, Hindi, Kannada |
 | Channel envelope | Web, WhatsApp sim, IVR sim |
 | Cross-channel resume | Shared application + session token |
-| Local/mock STT & TTS + rule NLU | No external LLM for restricted data |
+| Local faster-whisper STT + eSpeak NG TTS + rule NLU | Offline; no cloud TTS/LLM for restricted data |
 | Operational metrics | `GET /api/v1/metrics` |
 | Docker Compose | Reproducible local stack |
 
@@ -91,7 +91,7 @@ Citizen / Officer UI  →  FastAPI  →  Journey / Officer services
 | WhatsApp | `/whatsapp` | Simulator |
 | IVR | `/ivr` | Simulator (DTMF + speech-style) |
 
-Languages: **en**, **hi**, **te** (`config/i18n/`). Scripts and personas: [docs/personas-and-scripts.md](docs/personas-and-scripts.md).
+Languages: **en**, **hi**, **kn** (`config/languages.yaml`, `config/i18n/`). Scripts and personas: [docs/personas-and-scripts.md](docs/personas-and-scripts.md).
 
 ## Certificate journey (Income Certificate)
 
@@ -135,8 +135,9 @@ Demo persona: mobile `9876543210`, OTP `123456` (Lakshmi Devi).
 
 ```bash
 cp .env.example .env
-cd backend && python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cd backend && pip install -e .
 alembic upgrade head
 uvicorn app.main:app --reload --port 8000
 ```

@@ -4,6 +4,8 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
+    ffmpeg \
+    espeak-ng \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/pyproject.toml /app/backend/pyproject.toml
@@ -13,7 +15,8 @@ COPY backend/alembic.ini /app/backend/alembic.ini
 COPY config /app/config
 
 WORKDIR /app/backend
-RUN pip install --no-cache-dir -e ".[dev]"
+RUN pip install --no-cache-dir -e ".[dev,speech]"
+RUN python -c "from faster_whisper import WhisperModel; WhisperModel('tiny', device='cpu', compute_type='int8')"
 
 ENV PYTHONUNBUFFERED=1 \
     BOUNDARY_POLICY_PATH=/app/config/boundary/policies.yaml \
