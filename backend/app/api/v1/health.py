@@ -80,6 +80,12 @@ def services() -> dict:
                         "code": doc.code,
                         "label": doc.label,
                         "required": doc.required,
+                        "allowed_mime_types": list(doc.allowed_mime_types),
+                        "max_size_bytes": doc.max_size_bytes,
+                        "accepted_types": [
+                            {"code": item.code, "label": item.label}
+                            for item in doc.accepted_types
+                        ],
                     }
                     for doc in defn.documents
                 ],

@@ -78,6 +78,7 @@ async def _upload_all(
             application_pk=app.id,
             document_def=doc,
             upload=upload,
+            document_type=(doc.accepted_types[0].code if doc.accepted_types else None),
             actor_id=app.applicant_id,
             trace_id="doc",
             form_data=dict(app.form_data or {}),

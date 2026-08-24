@@ -103,6 +103,12 @@ def _to_field(orch: ChannelOrchestrator, field_index: int = 0) -> tuple[str, str
         ("27 June 1996", "27/06/1996"),
         ("27th June 1996", "27/06/1996"),
         ("27 jun 1996", "27/06/1996"),
+        ("27121996", "27/12/1996"),
+        ("27/12/1996", "27/12/1996"),
+        ("27-12-1996", "27/12/1996"),
+        ("27.12.1996", "27/12/1996"),
+        ("27 December 1996", "27/12/1996"),
+        ("27th December 1996", "27/12/1996"),
         ("१ २ ० ४ १ ९ ९ ५", "12/04/1995"),
         ("೨ ೭ ೦ ೬ ೧ ೯ ೯ ೬", "27/06/1996"),
     ],
@@ -234,7 +240,9 @@ def test_voice_dob_normalizes_then_confirms(orch: ChannelOrchestrator, spoken: s
     pending = _voice(orch, app_id, token, spoken)
     assert pending.state == JourneyState.FIELD_CONFIRMATION.value
     assert pending.data.get("proposed_value") == "27/06/1996"
-    assert "27/06/1996" in (pending.message or "")
+    assert "27 June 1996" in (pending.message or "")
+    assert "date_of_birth" not in (pending.message or "")
+    assert pending.data.get("proposed_display") == "27 June 1996"
 
     saved = _voice(orch, app_id, token, "yes")
     assert saved.state == JourneyState.FORM_CAPTURE.value

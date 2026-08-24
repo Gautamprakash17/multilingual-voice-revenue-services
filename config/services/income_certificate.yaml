@@ -92,6 +92,13 @@ documents:
   - code: IDENTITY_PROOF
     required: true
     label: Identity proof
+    accepted_types:
+      - code: AADHAAR
+        label: Aadhaar
+      - code: PAN
+        label: PAN
+      - code: DRIVING_LICENSE
+        label: Driving Licence
     allowed_mime_types:
       - application/pdf
       - image/jpeg
@@ -101,6 +108,11 @@ documents:
   - code: ADDRESS_PROOF
     required: true
     label: Address proof
+    accepted_types:
+      - code: AADHAAR
+        label: Aadhaar
+      - code: DRIVING_LICENSE
+        label: Driving Licence
     allowed_mime_types:
       - application/pdf
       - image/jpeg
@@ -110,6 +122,13 @@ documents:
   - code: INCOME_PROOF
     required: true
     label: Income proof
+    accepted_types:
+      - code: SALARY_SLIP
+        label: Salary slip
+      - code: BANK_STATEMENT
+        label: Bank statement
+      - code: ITR
+        label: ITR
     allowed_mime_types:
       - application/pdf
       - image/jpeg

@@ -25,8 +25,8 @@ export default function App() {
           </NavLink>
           <NavLink to="/journey">Apply</NavLink>
           <NavLink to="/officer">Officer</NavLink>
-          <NavLink to="/whatsapp">WhatsApp Simulator</NavLink>
-          <NavLink to="/ivr">IVR Simulator</NavLink>
+          <NavLink to="/whatsapp">WhatsApp</NavLink>
+          <NavLink to="/ivr">IVR</NavLink>
           <NavLink to="/placeholders">Surfaces</NavLink>
         </nav>
       </header>

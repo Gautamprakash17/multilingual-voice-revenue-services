@@ -8,11 +8,13 @@ Verification is **not** real OCR and does **not** compare file contents to appli
 
 From `config/services/income_certificate.yaml`:
 
-| Code | Purpose | Allowed types | Max size |
-|------|---------|---------------|----------|
-| IDENTITY_PROOF | Identity proof | PDF, JPEG, PNG | 5 MiB |
-| ADDRESS_PROOF | Address proof | PDF, JPEG, PNG | 5 MiB |
-| INCOME_PROOF | Income proof | PDF, JPEG, PNG | 5 MiB |
+| Category code | Citizen label | Accepted types (choose one) | Allowed files | Max size |
+|---------------|---------------|-----------------------------|---------------|----------|
+| IDENTITY_PROOF | Identity proof | Aadhaar, PAN, Driving Licence | PDF, JPEG, PNG | 5 MiB |
+| ADDRESS_PROOF | Address proof | Aadhaar, Driving Licence | PDF, JPEG, PNG | 5 MiB |
+| INCOME_PROOF | Income proof | Salary slip, Bank statement, ITR | PDF, JPEG, PNG | 5 MiB |
+
+Upload API path still uses the **category** code (`IDENTITY_PROOF`, …). The citizen-selected accepted type is sent as form field `document_type` (e.g. `AADHAAR`).
 
 ## Verification outcomes (local mock OCR / verifier)
 

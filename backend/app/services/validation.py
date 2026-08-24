@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from app.services.catalogue import FieldDef
+from app.speech.dates import normalize_spoken_date
 from app.speech.mobile import normalize_indian_mobile_digits
 
 
@@ -49,16 +50,26 @@ def validate_field(field: FieldDef, raw: str) -> ValidationResult:
 
     if field.type == "date":
         fmt = str(rules.get("format", "%d/%m/%Y"))
-        try:
-            parsed = datetime.strptime(text, fmt)
-        except ValueError:
+        expected = (
+            "Use format "
+            + fmt.replace("%d", "DD").replace("%m", "MM").replace("%Y", "YYYY")
+        )
+        candidates: list[str] = [text]
+        normalized = normalize_spoken_date(text)
+        if normalized and normalized not in candidates:
+            candidates.insert(0, normalized)
+        parsed = None
+        for candidate in candidates:
+            try:
+                parsed = datetime.strptime(candidate, fmt)
+                break
+            except ValueError:
+                continue
+        if parsed is None:
             return ValidationResult(
                 ok=False,
                 error="Invalid date",
-                expected_format=(
-                    "Use format "
-                    + fmt.replace("%d", "DD").replace("%m", "MM").replace("%Y", "YYYY")
-                ),
+                expected_format=expected,
             )
         if parsed.date() > datetime.now().date():
             return ValidationResult(

@@ -410,7 +410,13 @@ class JourneyService:
         proposed_value: str,
     ) -> JourneyReply:
         lang = self._lang(app)
-        message = i18n_t("field_confirm_heard", lang, value=proposed_value)
+        display_value = proposed_value
+        field = self.service.field_by_name(field_name)
+        if field and field.type == "date":
+            from app.speech.dates import format_date_for_citizen
+
+            display_value = format_date_for_citizen(proposed_value)
+        message = i18n_t("field_confirm_heard", lang, value=display_value)
         return JourneyReply(
             application_id=app.application_id,
             state=app.current_state,
@@ -420,6 +426,7 @@ class JourneyService:
                 "field_confirmation": True,
                 "field": field_name,
                 "proposed_value": proposed_value,
+                "proposed_display": display_value,
                 "next_field": field_name,
                 "form_data": dict(app.form_data or {}),
             },
@@ -490,13 +497,7 @@ class JourneyService:
                     event_type="REVIEW_STARTED",
                 )
                 return self._review_reply(app)
-            return JourneyReply(
-                application_id=app.application_id,
-                state=app.current_state,
-                message=f"Updated {field_name}.",
-                prompt="Continue document upload or proceed when complete.",
-                data={"missing_documents": self._missing_documents(app)},
-            )
+            return self._document_capture_entry_reply(app, session)
 
         nxt = self._next_missing_field(app)
         if nxt:
@@ -512,18 +513,7 @@ class JourneyService:
             )
 
         self._transition(app, session, JourneyState.DOCUMENT_CAPTURE, trace_id=trace_id)
-        missing = self._missing_documents(app)
-        lang = self._lang(app)
-        return JourneyReply(
-            application_id=app.application_id,
-            state=app.current_state,
-            message=i18n_t("form_complete", lang),
-            prompt=document_next_prompt(missing[0], self.service, lang),
-            data={
-                "missing_documents": missing,
-                "form_data": dict(app.form_data or {}),
-            },
-        )
+        return self._document_capture_entry_reply(app, session)
 
     # ---- state handlers ----
 
@@ -896,19 +886,7 @@ class JourneyService:
                 return self._review_reply(app)
             # All fields present — move to documents
             self._transition(app, session, JourneyState.DOCUMENT_CAPTURE, trace_id=trace_id)
-            missing = self._missing_documents(app)
-            lang = self._lang(app)
-            return JourneyReply(
-                application_id=app.application_id,
-                state=app.current_state,
-                message=i18n_t("form_complete", lang),
-                prompt=(
-                    document_next_prompt(missing[0], self.service, lang)
-                    if missing
-                    else i18n_t("document_all_uploaded", lang)
-                ),
-                data={"missing_documents": missing},
-            )
+            return self._document_capture_entry_reply(app, session)
 
         field = self.service.field_by_name(field_name)
         assert field is not None
@@ -1084,6 +1062,45 @@ class JourneyService:
             },
         )
 
+    def _document_capture_entry_reply(
+        self, app: Application, session: ConversationSession
+    ) -> JourneyReply:
+        """Prompt for the next document, or IVR cross-channel continuation."""
+        missing = self._missing_documents(app)
+        lang = self._lang(app)
+        base_data = {
+            "missing_documents": missing,
+            "form_data": dict(app.form_data or {}),
+        }
+        if (session.channel or "").lower() == "ivr":
+            message = i18n_t(
+                "document_ivr_continue",
+                lang,
+                application_id=app.application_id,
+            )
+            return JourneyReply(
+                application_id=app.application_id,
+                state=app.current_state,
+                message=message,
+                prompt=message,
+                data={
+                    **base_data,
+                    "continue_on_channels": ["web", "whatsapp"],
+                    "application_id": app.application_id,
+                },
+            )
+        return JourneyReply(
+            application_id=app.application_id,
+            state=app.current_state,
+            message=i18n_t("form_complete", lang),
+            prompt=(
+                document_next_prompt(missing[0], self.service, lang)
+                if missing
+                else i18n_t("document_all_uploaded", lang)
+            ),
+            data=base_data,
+        )
+
     def _on_document_message(
         self, app: Application, session: ConversationSession, text: str, *, trace_id: str | None
     ) -> JourneyReply:
@@ -1100,6 +1117,23 @@ class JourneyService:
             return self._review_reply(app)
         if missing:
             lang = self._lang(app)
+            if (session.channel or "").lower() == "ivr":
+                message = i18n_t(
+                    "document_ivr_continue",
+                    lang,
+                    application_id=app.application_id,
+                )
+                return JourneyReply(
+                    application_id=app.application_id,
+                    state=app.current_state,
+                    message=message,
+                    prompt=message,
+                    data={
+                        "missing_documents": missing,
+                        "continue_on_channels": ["web", "whatsapp"],
+                        "application_id": app.application_id,
+                    },
+                )
             return JourneyReply(
                 application_id=app.application_id,
                 state=app.current_state,
@@ -1547,7 +1581,12 @@ class JourneyService:
         )
 
     def after_document_upload(
-        self, application_id: str, access_token: str, *, trace_id: str | None = None
+        self,
+        application_id: str,
+        access_token: str,
+        *,
+        trace_id: str | None = None,
+        document_code: str | None = None,
     ) -> JourneyReply:
         app = self._get_app_by_ref(application_id)
         session = self._get_session(app, access_token)
@@ -1604,12 +1643,37 @@ class JourneyService:
         missing = self._missing_documents(app)
         if missing:
             lang = self._lang(app)
+            uploaded_code = (document_code or "").upper() or None
+            if not uploaded_code:
+                verified = {
+                    d.document_code
+                    for d in app.documents
+                    if (d.verification_status or "") == "VERIFIED"
+                }
+                uploaded_code = next(
+                    (
+                        code
+                        for code in self.service.required_document_codes()
+                        if code in verified and code not in missing
+                    ),
+                    None,
+                )
+            category = (
+                document_label(uploaded_code, self.service, lang)
+                if uploaded_code
+                else i18n_t("document_stored", lang)
+            )
+            message = (
+                i18n_t("document_uploaded_ok", lang, document_name=category)
+                if uploaded_code
+                else i18n_t("document_stored", lang)
+            )
             return JourneyReply(
                 application_id=app.application_id,
                 state=app.current_state,
-                message=i18n_t("document_stored", lang),
+                message=message,
                 prompt=document_next_prompt(missing[0], self.service, lang),
-                data={"missing_documents": missing},
+                data={"missing_documents": missing, "document_code": uploaded_code},
             )
         self._transition(
             app,

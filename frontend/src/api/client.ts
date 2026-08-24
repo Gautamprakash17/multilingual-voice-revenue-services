@@ -62,10 +62,18 @@ export type ServiceFieldConfig = {
   prompt?: string;
 };
 
+export type AcceptedDocumentType = {
+  code: string;
+  label: string;
+};
+
 export type ServiceDocumentConfig = {
   code: string;
   label: string;
   required: boolean;
+  allowed_mime_types?: string[];
+  max_size_bytes?: number;
+  accepted_types?: AcceptedDocumentType[];
 };
 
 export type ServiceConfig = {
@@ -174,9 +182,13 @@ export async function uploadDocument(
   token: string,
   documentCode: string,
   file: File,
+  documentType?: string,
 ): Promise<JourneyResponse> {
   const form = new FormData();
   form.append("file", file);
+  if (documentType) {
+    form.append("document_type", documentType);
+  }
   const res = await fetch(
     `${API_BASE}/api/v1/journey/${applicationId}/documents/${documentCode}`,
     {

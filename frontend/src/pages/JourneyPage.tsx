@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   encodePocVoice,
   fetchLanguages,
@@ -25,6 +26,8 @@ import {
   missingRequiredMessage,
   type FormDraft,
 } from "../journey/form";
+import { citizenVisibleText } from "../journey/chatText";
+import { storeSessionHandoff, type WhatsAppResumeNavState } from "../journey/sessionHandoff";
 import {
   applyForServiceLabel,
   documentLabel,
@@ -38,17 +41,6 @@ import {
 import { ServiceAudioSession } from "../journey/serviceAudio";
 
 type ChatItem = { role: "bot" | "user" | "system"; text: string };
-
-const COMMANDISH_PROMPT =
-  /\b(Reply|reply)\b.*(CONFIRM|CORRECT|PAY|FAIL|TIMEOUT|INCOME_CERTIFICATE|RETRY)\b/i;
-
-function citizenVisibleText(message: string, prompt?: string | null): string {
-  const parts = [message];
-  if (prompt && prompt.trim() !== message.trim() && !COMMANDISH_PROMPT.test(prompt)) {
-    parts.push(prompt);
-  }
-  return parts.filter(Boolean).join("\n");
-}
 
 function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -180,19 +172,23 @@ type ReviewPayload = {
 };
 
 export default function JourneyPage() {
+  const navigate = useNavigate();
   const { languages, defaultLanguage, normalizeLang, languageLabel } = useLanguageCatalog();
   const services = useServiceCatalog();
   const [applicationId, setApplicationId] = useState<string | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [state, setState] = useState<string>("—");
   const [language, setLanguage] = useState<string>(defaultLanguage);
-  const [prompt, setPrompt] = useState<string>("");
   const [input, setInput] = useState("");
   const [chat, setChat] = useState<ChatItem[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [review, setReview] = useState<ReviewPayload | null>(null);
   const [docCode, setDocCode] = useState<string>("");
+  const [selectedDocTypes, setSelectedDocTypes] = useState<Record<string, string>>({});
+  const [pendingFiles, setPendingFiles] = useState<Record<string, File | null>>({});
+  const [paymentProcessing, setPaymentProcessing] = useState(false);
+  const [mockPayOpen, setMockPayOpen] = useState(false);
   const [last, setLast] = useState<JourneyResponse | null>(null);
   const [transcript, setTranscript] = useState<string>("");
   const [voicePhase, setVoicePhase] = useState<VoicePhase>("idle");
@@ -213,12 +209,18 @@ export default function JourneyPage() {
   const [editMode, setEditMode] = useState(false);
   const [selectedServiceCode, setSelectedServiceCode] = useState<string | null>(null);
   const [invalidFieldName, setInvalidFieldName] = useState<string | null>(null);
-  /** Backend-expected form field — survives validation replies that omit next_field. */
+  /* Backend-expected form field — survives validation replies that omit next_field. */
   const [formCursorField, setFormCursorField] = useState<string | null>(null);
   const [capturedFormData, setCapturedFormData] = useState<Record<string, unknown>>({});
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
 
   const isListening = voicePhase === "listening";
   const isVoiceProcessing = voicePhase === "processing";
+  const isServicePlaying = serviceAudioState === "playing";
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [chat, state]);
 
   useEffect(() => {
     const session = serviceAudioSessionRef.current;
@@ -295,6 +297,13 @@ export default function JourneyPage() {
   const showPaymentActions = showsPaymentActions(state);
 
   useEffect(() => {
+    if (state !== "PAYMENT") {
+      setMockPayOpen(false);
+      setPaymentProcessing(false);
+    }
+  }, [state]);
+
+  useEffect(() => {
     if (!docCode && serviceDocuments[0]?.code) {
       setDocCode(serviceDocuments[0].code);
     }
@@ -343,9 +352,13 @@ export default function JourneyPage() {
   function pushBot(reply: JourneyResponse, opts?: { playAudio?: boolean }) {
     setLast(reply);
     setState(reply.state);
-    setPrompt(reply.prompt || "");
     setApplicationId(reply.application_id);
-    if (reply.access_token) setToken(reply.access_token);
+    if (reply.access_token) {
+      setToken(reply.access_token);
+      storeSessionHandoff(reply.application_id, reply.access_token);
+    } else if (token) {
+      storeSessionHandoff(reply.application_id, token);
+    }
     if (reply.language) setLanguage(normalizeLang(reply.language));
     if (reply.transcript) setTranscript(reply.transcript);
     if (typeof reply.data?.service_code === "string") {
@@ -353,8 +366,19 @@ export default function JourneyPage() {
     }
     const visible = citizenVisibleText(reply.message, reply.prompt);
     const lines = [visible];
-    if (reply.error && !INTERNAL_UI_ERRORS.has(reply.error)) {
-      lines.push(reply.message || "Something went wrong. Please try again.");
+    if (
+      reply.error &&
+      !INTERNAL_UI_ERRORS.has(reply.error) &&
+      reply.message &&
+      !visible.includes(reply.message.trim())
+    ) {
+      lines.push(reply.message);
+    } else if (
+      reply.error &&
+      !INTERNAL_UI_ERRORS.has(reply.error) &&
+      !reply.message
+    ) {
+      lines.push("Something went wrong. Please try again.");
     }
     if (
       reply.expected_format &&
@@ -363,7 +387,10 @@ export default function JourneyPage() {
     ) {
       lines.push("Please check the format and try again.");
     }
-    setChat((prev) => [...prev, { role: "bot", text: lines.filter(Boolean).join("\n") }]);
+    const botText = lines.filter(Boolean).join("\n");
+    if (botText) {
+      setChat((prev) => [...prev, { role: "bot", text: botText }]);
+    }
     const reviewData = reply.data?.review;
     if (reviewData && typeof reviewData === "object") {
       const payload = reviewData as ReviewPayload;
@@ -475,6 +502,23 @@ export default function JourneyPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Action failed");
     } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmMockPayment(friendlyLabel: string) {
+    if (!applicationId || !token || paymentProcessing) return;
+    setMockPayOpen(false);
+    setPaymentProcessing(true);
+    setBusy(true);
+    setError(null);
+    try {
+      await new Promise((resolve) => window.setTimeout(resolve, 900));
+      await sendJourneyText(friendlyLabel, JOURNEY_COMMANDS.pay);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Payment failed");
+    } finally {
+      setPaymentProcessing(false);
       setBusy(false);
     }
   }
@@ -868,13 +912,35 @@ export default function JourneyPage() {
     }
   }
 
-  async function onUpload(file: File | null) {
-    if (!file || !applicationId || !token) return;
+  async function onUpload(categoryCode: string) {
+    const file = pendingFiles[categoryCode];
+    const docMeta = serviceDocuments.find((d) => d.code === categoryCode);
+    const accepted = docMeta?.accepted_types || [];
+    const docType = selectedDocTypes[categoryCode] || accepted[0]?.code;
+    if (!file || !applicationId || !token || !categoryCode) return;
+    if (accepted.length > 0 && !docType) {
+      setError("Choose a document type before uploading.");
+      return;
+    }
+    setDocCode(categoryCode);
     setBusy(true);
-    setChat((prev) => [...prev, { role: "user", text: `Upload ${docCode}: ${file.name}` }]);
+    const categoryLabel = docMeta?.label || documentLabel(categoryCode);
+    const typeLabel =
+      accepted.find((t) => t.code === docType)?.label || docType || "document";
+    setChat((prev) => [
+      ...prev,
+      { role: "user", text: `Upload ${categoryLabel} (${typeLabel}): ${file.name}` },
+    ]);
     try {
-      const reply = await uploadDocument(applicationId, token, docCode, file);
+      const reply = await uploadDocument(
+        applicationId,
+        token,
+        categoryCode,
+        file,
+        docType,
+      );
       pushBot(reply);
+      setPendingFiles((prev) => ({ ...prev, [categoryCode]: null }));
       const missing = reply.data?.missing_documents;
       if (Array.isArray(missing) && missing[0]) setDocCode(String(missing[0]));
     } catch (err) {
@@ -886,61 +952,95 @@ export default function JourneyPage() {
 
   return (
     <section className="panel journey">
-      <div className="journey-header">
-        <div>
-          <h1>Apply for Income Certificate</h1>
-          <p className="lede">
-            Guided citizen application by text or voice. Choose your language, complete the
-            form, upload documents, pay the fee, and track your application status.
-          </p>
+      <div className="journey-hero">
+        <div className="journey-header">
+          <div>
+            <h1>Apply for an Income Certificate</h1>
+            <p className="lede">
+              Complete your application by voice or text. You can speak in English, हिन्दी, or
+              ಕನ್ನಡ.
+            </p>
+          </div>
+          {(applicationId || (state && state !== "—")) && (
+            <div className="journey-meta" aria-live="polite">
+              <div>
+                <span className="label">Application ID</span>
+                <strong>{applicationId ?? "Not started"}</strong>
+              </div>
+              <div>
+                <span className="label">Step</span>
+                <strong className="state-pill">{stateLabel(state)}</strong>
+              </div>
+              <div>
+                <span className="label">Language</span>
+                <strong>{languageLabel(language)}</strong>
+              </div>
+            </div>
+          )}
         </div>
-        <div className="journey-meta" aria-live="polite">
-          <div>
-            <span className="label">Application ID</span>
-            <strong>{applicationId ?? "Not started"}</strong>
-          </div>
-          <div>
-            <span className="label">Step</span>
-            <strong className="state-pill">{stateLabel(state)}</strong>
-          </div>
-          <div>
-            <span className="label">Language</span>
-            <strong>{languageLabel(language)}</strong>
-          </div>
-        </div>
-      </div>
 
-      <div className="section-card">
-        <h2>Start or continue</h2>
-        <div className="journey-actions">
-          <button type="button" onClick={() => void onStart()} disabled={busy}>
-            Start application
-          </button>
-          <button
-            type="button"
-            className="ghost"
-            disabled={busy || !applicationId || !token}
-            onClick={() => {
-              if (!applicationId || !token) return;
-              void getJourney(applicationId, token).then(pushBot);
-            }}
-          >
-            Refresh status
-          </button>
-          <div className="lang-pills" role="group" aria-label="Select language">
-            <span className="lang-label">Language</span>
-            {languages.map((l) => (
-              <button
-                key={l.code}
-                type="button"
-                aria-pressed={language === l.code}
-                disabled={busy || !applicationId || (state !== "LANGUAGE_SELECT" && !!state)}
-                onClick={() => void sendLanguage(l.code)}
-              >
-                {l.native_name}
-              </button>
-            ))}
+        <div className="journey-start-card">
+          <div className="journey-start-copy">
+            <h2 style={{ margin: 0 }}>Start the application</h2>
+            <p>
+              Start to hear the welcome message. After that, the service guides you step by
+              step — you do not need to type the first question.
+            </p>
           </div>
+          <div className="journey-actions" style={{ margin: 0 }}>
+            <button
+              type="button"
+              className="btn-primary-lg"
+              onClick={() => void onStart()}
+              disabled={busy}
+            >
+              Start application
+            </button>
+            <button
+              type="button"
+              className="ghost"
+              disabled={busy || !applicationId || !token}
+              onClick={() => {
+                if (!applicationId || !token) return;
+                void getJourney(applicationId, token).then(pushBot);
+              }}
+            >
+              Refresh status
+            </button>
+            {applicationId && token && (
+              <button
+                type="button"
+                className="ghost"
+                disabled={busy}
+                onClick={() => {
+                  storeSessionHandoff(applicationId, token);
+                  navigate("/whatsapp", {
+                    state: {
+                      resumeFromWeb: true,
+                      applicationId,
+                    } satisfies WhatsAppResumeNavState,
+                  });
+                }}
+              >
+                Continue on WhatsApp
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="lang-pills" role="group" aria-label="Select language" style={{ marginTop: "1.25rem" }}>
+          <span className="lang-label">Language</span>
+          {languages.map((l) => (
+            <button
+              key={l.code}
+              type="button"
+              aria-pressed={language === l.code}
+              disabled={busy || !applicationId || state !== "LANGUAGE_SELECT"}
+              onClick={() => void sendLanguage(l.code)}
+            >
+              {l.native_name}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -949,9 +1049,9 @@ export default function JourneyPage() {
           {error}
         </div>
       )}
-      {voiceNote && (
+      {(voiceNote || isServicePlaying) && (
         <p
-          className={`meta voice-status${isListening ? " voice-status-listening" : isVoiceProcessing ? " voice-status-processing" : ""}`}
+          className={`meta voice-status${isListening ? " voice-status-listening" : isVoiceProcessing ? " voice-status-processing" : isServicePlaying ? " voice-status-playing" : ""}`}
           role="status"
         >
           {isListening && (
@@ -960,7 +1060,11 @@ export default function JourneyPage() {
               <span className="voice-recording-pulse" />
             </span>
           )}
-          Voice: <em>{voiceNote}</em>
+          {isServicePlaying && !isListening && !isVoiceProcessing
+            ? "Voice: Playing…"
+            : voiceNote
+              ? <>Voice: <em>{voiceNote}</em></>
+              : null}
         </p>
       )}
       {transcript && (
@@ -973,7 +1077,7 @@ export default function JourneyPage() {
         <div className="service-audio-bar" role="region" aria-label="Service audio response">
           {serviceAudioState === "playing" && (
             <p className="meta service-audio-status" role="status">
-              🔊 Playing audio response…
+              Playing audio response…
             </p>
           )}
           {serviceAudioState === "blocked" && (
@@ -988,30 +1092,38 @@ export default function JourneyPage() {
               onClick={replayServiceAudio}
               aria-label="Replay service audio response"
             >
-              🔊 {serviceAudioState === "playing" ? "Replay" : "Play"}
+              {serviceAudioState === "playing" ? "Replay" : "Play"}
             </button>
           )}
         </div>
       )}
 
-      <div className="section-card">
+      <div className="conversation-panel">
         <h2>Conversation</h2>
         <div className="chat-log" role="log" aria-live="polite" aria-relevant="additions">
           {chat.length === 0 && (
             <div className="bubble system">
               Press <strong>Start application</strong> to hear the welcome prompt, then use{" "}
-              <strong>Speak</strong> to reply by voice or type and press <strong>Send</strong>.
-              The service speaks each next step through local TTS — no need to type the question.
+              <strong>Speak</strong> to reply by voice. You can also type as a fallback. The
+              service speaks each next step — no need to type the question.
             </div>
           )}
-          {chat.map((item, idx) => (
-            <div key={`${item.role}-${idx}`} className={`bubble ${item.role}`}>
-              <span className="bubble-role">
-                {item.role === "user" ? "You" : item.role === "bot" ? "Service" : "Notice"}
-              </span>
-              {item.text}
-            </div>
-          ))}
+          {chat.map((item, idx) => {
+            const isLatestBot =
+              item.role === "bot" && idx === chat.map((c) => c.role).lastIndexOf("bot");
+            return (
+              <div
+                key={`${item.role}-${idx}`}
+                className={`bubble ${item.role}${isLatestBot ? " latest-prompt" : ""}`}
+              >
+                <span className="bubble-role">
+                  {item.role === "user" ? "You" : item.role === "bot" ? "Service" : "Notice"}
+                </span>
+                {item.text}
+              </div>
+            );
+          })}
+          <div ref={chatEndRef} />
         </div>
 
         {state === "CONSENT" && (
@@ -1046,6 +1158,7 @@ export default function JourneyPage() {
             role="group"
             aria-label="Confirm captured value"
           >
+            <p className="action-bar-lead">Please confirm what the service heard.</p>
             <div className="action-bar-buttons">
               <button
                 type="button"
@@ -1116,7 +1229,7 @@ export default function JourneyPage() {
               {serviceDisplayName(activeService?.code, services)} application
             </h3>
             <p className="action-bar-lead">
-              Fill in the details below, or answer by voice using Speak (no typing required).
+              Fill in the details below, or answer by voice using Speak.
             </p>
             <div className="form-grid">
               {serviceFields.map((field) => {
@@ -1306,21 +1419,24 @@ export default function JourneyPage() {
         {showPaymentActions && state === "FEE_QUOTE" && feeInfo && (
           <div className="action-bar payment-quote-bar" role="group" aria-label="Application fee">
             <p className="fee-summary">
-              Application Fee: <strong>{feeInfo.display}</strong>
+              Application fee
+              <strong className="fee-amount">{feeInfo.display}</strong>
             </p>
             <div className="action-bar-buttons">
               <button
                 type="button"
                 className="btn-success"
-                disabled={busy}
-                onClick={() => void submitCommand(`Pay ${feeInfo.display}`, JOURNEY_COMMANDS.pay)}
+                disabled={busy || paymentProcessing}
+                onClick={() =>
+                  void submitCommand("Proceed to payment", JOURNEY_COMMANDS.pay)
+                }
               >
-                Pay {feeInfo.display}
+                Proceed to payment
               </button>
               <button
                 type="button"
                 className="ghost"
-                disabled={busy}
+                disabled={busy || paymentProcessing}
                 onClick={() => void submitCommand("Cancel", JOURNEY_COMMANDS.cancel)}
               >
                 Cancel
@@ -1330,47 +1446,143 @@ export default function JourneyPage() {
         )}
 
         {showPaymentActions && state === "PAYMENT" && feeInfo && (
-          <div className="action-bar payment-sim-bar" role="group" aria-label="Complete payment">
-            <p className="action-bar-lead">
-              Application Fee: <strong>{feeInfo.display}</strong>
-            </p>
-            <div className="action-bar-buttons">
-              <button
-                type="button"
-                className="btn-success"
-                disabled={busy}
-                onClick={() => void submitCommand(`Pay ${feeInfo.display}`, JOURNEY_COMMANDS.pay)}
-              >
-                Pay {feeInfo.display}
-              </button>
-              <button
-                type="button"
-                className="ghost"
-                disabled={busy}
-                onClick={() => void submitCommand("Cancel", JOURNEY_COMMANDS.cancel)}
-              >
-                Cancel
-              </button>
+          <div className="payment-mock-card" role="region" aria-label="Mock payment">
+            <div className="payment-mock-header">
+              <h3>Pay application fee</h3>
+              <span className="demo-badge">SYNTHETIC / DEMO</span>
             </div>
+            <dl className="payment-mock-dl">
+              <dt>Amount</dt>
+              <dd>{feeInfo.display}</dd>
+              <dt>Payment method</dt>
+              <dd>QR Code</dd>
+            </dl>
+
+            {paymentProcessing ? (
+              <p className="payment-processing" role="status">
+                Processing payment…
+              </p>
+            ) : (
+              <>
+                <div className="demo-qr" aria-label="Synthetic demo QR code">
+                  <svg viewBox="0 0 120 120" width="140" height="140" role="img">
+                    <title>Synthetic demo QR code — not a real payment code</title>
+                    <rect width="120" height="120" fill="#fff" stroke="#1a5f9e" strokeWidth="4" />
+                    <rect x="12" y="12" width="28" height="28" fill="#1a2332" />
+                    <rect x="80" y="12" width="28" height="28" fill="#1a2332" />
+                    <rect x="12" y="80" width="28" height="28" fill="#1a2332" />
+                    <rect x="48" y="48" width="24" height="24" fill="#1a2332" />
+                    <rect x="80" y="80" width="12" height="12" fill="#1a2332" />
+                    <rect x="100" y="80" width="8" height="8" fill="#1a2332" />
+                    <rect x="80" y="100" width="8" height="8" fill="#1a2332" />
+                    <rect x="52" y="16" width="8" height="8" fill="#1a2332" />
+                    <rect x="16" y="52" width="8" height="8" fill="#1a2332" />
+                    <rect x="64" y="80" width="8" height="20" fill="#1a2332" />
+                    <text
+                      x="60"
+                      y="72"
+                      textAnchor="middle"
+                      fontSize="9"
+                      fill="#1a5f9e"
+                      fontFamily="system-ui,sans-serif"
+                      fontWeight="700"
+                    >
+                      DEMO
+                    </text>
+                  </svg>
+                  <p className="muted demo-qr-caption">
+                    Demo QR only — no real UPI or gateway charge
+                  </p>
+                </div>
+
+                <div className="action-bar-buttons payment-mock-actions">
+                  <button
+                    type="button"
+                    className="ghost"
+                    disabled={busy}
+                    onClick={() => setMockPayOpen(true)}
+                  >
+                    Open payment link
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-success"
+                    disabled={busy}
+                    onClick={() => void confirmMockPayment("I have paid")}
+                  >
+                    I have paid
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost"
+                    disabled={busy}
+                    onClick={() => void submitCommand("Cancel", JOURNEY_COMMANDS.cancel)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </>
+            )}
+
+            {mockPayOpen && !paymentProcessing && (
+              <div
+                className="mock-pay-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="mock-pay-title"
+              >
+                <div className="mock-pay-modal-card">
+                  <h4 id="mock-pay-title">Demo payment page</h4>
+                  <p className="muted">
+                    Local synthetic checkout — no external payment API is called.
+                  </p>
+                  <p className="fee-summary">
+                    Amount due <strong>{feeInfo.display}</strong>
+                  </p>
+                  <p className="meta">
+                    Link:{" "}
+                    <code>https://pay.local/demo/{applicationId || "INC"}</code>
+                  </p>
+                  <div className="action-bar-buttons">
+                    <button
+                      type="button"
+                      className="btn-success"
+                      onClick={() => void confirmMockPayment("Paid via demo link")}
+                    >
+                      Confirm demo payment
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost"
+                      onClick={() => setMockPayOpen(false)}
+                    >
+                      Close
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
         {showPaymentActions && state === "PAYMENT_FAILED" && feeInfo && (
           <div className="action-bar payment-sim-bar" role="group" aria-label="Retry payment">
-            <p className="action-bar-lead">Payment did not complete. You can try again.</p>
+            <p className="action-bar-lead">
+              Payment did not complete. No fee was charged. You can try again.
+            </p>
             <div className="action-bar-buttons">
               <button
                 type="button"
                 className="btn-success"
-                disabled={busy}
-                onClick={() => void submitCommand(`Pay ${feeInfo.display}`, JOURNEY_COMMANDS.retry)}
+                disabled={busy || paymentProcessing}
+                onClick={() => void submitCommand("Retry payment", JOURNEY_COMMANDS.retry)}
               >
-                Pay {feeInfo.display}
+                Retry payment
               </button>
               <button
                 type="button"
                 className="ghost"
-                disabled={busy}
+                disabled={busy || paymentProcessing}
                 onClick={() => void submitCommand("Cancel", JOURNEY_COMMANDS.cancel)}
               >
                 Cancel
@@ -1380,46 +1592,155 @@ export default function JourneyPage() {
         )}
 
         {(state === "DOCUMENT_CAPTURE" || state === "DOCUMENT_REJECTED") && (
-          <div className="upload-bar section-card" style={{ marginTop: "1rem", boxShadow: "none" }}>
-            <label htmlFor="doc-code">
-              Document type
-              <select
-                id="doc-code"
-                value={docCode}
-                onChange={(e) => setDocCode(e.target.value)}
-              >
-                {(serviceDocuments.length
-                  ? serviceDocuments.map((doc) => doc.code)
-                  : ["IDENTITY_PROOF", "ADDRESS_PROOF", "INCOME_PROOF"]
-                ).map((code) => (
-                  <option key={code} value={code}>
-                    {serviceDocuments.find((item) => item.code === code)?.label ||
-                      documentLabel(code)}
-                    {missingDocs.includes(code) ? " (needed)" : ""}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label htmlFor="doc-file">
-              Choose file
-              <span className="field-hint">PDF, JPG, or PNG</span>
-              <input
-                id="doc-file"
-                type="file"
-                accept=".pdf,.png,.jpg,.jpeg"
-                onChange={(e) => void onUpload(e.target.files?.[0] ?? null)}
-                disabled={busy}
-              />
-            </label>
+          <div className="upload-bar" aria-label="Document upload">
+            <p className="action-bar-lead">
+              Upload the required documents (PDF, JPG, or PNG). Use synthetic demo files for this
+              POC.
+            </p>
+            <div className="doc-card-grid">
+              {serviceDocuments.map((doc) => {
+                const needed = missingDocs.includes(doc.code);
+                const reviewed = review?.documents?.find((d) => d.code === doc.code);
+                const statusText = needed
+                  ? state === "DOCUMENT_REJECTED"
+                    ? "Needs re-upload"
+                    : "Required"
+                  : reviewed?.verification_status
+                    ? verificationStatusLabel(reviewed.verification_status)
+                    : "Uploaded";
+                const accepted = doc.accepted_types || [];
+                const selectedType = selectedDocTypes[doc.code] || accepted[0]?.code || "";
+                const pending = pendingFiles[doc.code];
+                const acceptAttr = (doc.allowed_mime_types || [])
+                  .map((m) => {
+                    if (m === "application/pdf") return ".pdf";
+                    if (m === "image/jpeg") return ".jpg,.jpeg";
+                    if (m === "image/png") return ".png";
+                    return "";
+                  })
+                  .filter(Boolean)
+                  .join(",");
+                return (
+                  <article
+                    key={doc.code}
+                    className={`doc-card${needed ? " needed" : " done"}`}
+                  >
+                    <h3>{doc.label || documentLabel(doc.code)}</h3>
+                    <span className="doc-status" aria-label={`Status: ${statusText}`}>
+                      {statusText}
+                    </span>
+                    {needed && accepted.length > 0 && (
+                      <fieldset className="doc-type-fieldset">
+                        <legend>Choose document type</legend>
+                        <div className="doc-type-options" role="group">
+                          {accepted.map((t) => (
+                            <button
+                              key={t.code}
+                              type="button"
+                              className={
+                                selectedType === t.code ? "doc-type-btn active" : "doc-type-btn"
+                              }
+                              aria-pressed={selectedType === t.code}
+                              disabled={busy}
+                              onClick={() =>
+                                setSelectedDocTypes((prev) => ({
+                                  ...prev,
+                                  [doc.code]: t.code,
+                                }))
+                              }
+                            >
+                              {t.label}
+                            </button>
+                          ))}
+                        </div>
+                      </fieldset>
+                    )}
+                    {needed && (
+                      <>
+                        <label htmlFor={`doc-file-${doc.code}`}>
+                          Choose document
+                          <input
+                            id={`doc-file-${doc.code}`}
+                            type="file"
+                            accept={acceptAttr || ".pdf,.png,.jpg,.jpeg"}
+                            disabled={busy}
+                            onChange={(e) => {
+                              const file = e.target.files?.[0] ?? null;
+                              setPendingFiles((prev) => ({ ...prev, [doc.code]: file }));
+                              setDocCode(doc.code);
+                            }}
+                          />
+                        </label>
+                        {pending && (
+                          <p className="meta">
+                            Selected: <strong>{pending.name}</strong>
+                          </p>
+                        )}
+                        <button
+                          type="button"
+                          disabled={busy || !pending || (accepted.length > 0 && !selectedType)}
+                          onClick={() => void onUpload(doc.code)}
+                        >
+                          Upload document
+                        </button>
+                      </>
+                    )}
+                  </article>
+                );
+              })}
+              {serviceDocuments.length === 0 && (
+                <p className="muted">Loading document requirements from the service catalogue…</p>
+              )}
+            </div>
           </div>
         )}
 
         {state === "SUBMITTED" && (
-          <div className="action-bar submitted-bar" role="status" aria-label="Application submitted">
-            <p className="action-bar-lead">
-              Your application has been submitted. Use <strong>Refresh status</strong> above to
-              check progress. Receipt details appear in the conversation when available.
+          <div className="submitted-card" role="status" aria-label="Application submitted">
+            {typeof last?.data?.payment_ref === "string" && last.data.payment_ref && (
+              <div className="payment-success-banner">
+                <p className="payment-success-title">✓ Payment successful</p>
+                <dl className="payment-mock-dl">
+                  <dt>Amount</dt>
+                  <dd>
+                    {feeInfo?.display ||
+                      (activeService?.fee
+                        ? formatFee(activeService.fee.amount_paise, activeService.fee.currency)
+                        : "—")}
+                  </dd>
+                  <dt>Payment reference</dt>
+                  <dd>{String(last.data.payment_ref)}</dd>
+                </dl>
+              </div>
+            )}
+            <h3>Application submitted successfully</h3>
+            <p>
+              Your Income Certificate application has been submitted. It is with the revenue
+              office for review. Keep your application ID for follow-up.
             </p>
+            <div className="submitted-meta">
+              <div>
+                <span className="label">Application ID</span>
+                <strong>{applicationId}</strong>
+              </div>
+              <div>
+                <span className="label">Status</span>
+                <strong className="badge badge-success">
+                  {typeof last?.data?.processing_status === "string"
+                    ? String(last.data.processing_status)
+                    : stateLabel(state)}
+                </strong>
+              </div>
+              <div>
+                <span className="label">Next step</span>
+                <strong>Use Refresh status to check progress</strong>
+              </div>
+            </div>
+            {typeof last?.data?.receipt === "string" && (
+              <pre className="code-block" style={{ marginTop: "0.75rem" }}>
+                {last.data.receipt as string}
+              </pre>
+            )}
           </div>
         )}
 
@@ -1432,63 +1753,80 @@ export default function JourneyPage() {
         )}
 
         {showComposer && (
-          <form className="composer" onSubmit={(e) => void onSend(e)}>
-            <label htmlFor="citizen-message" className="visually-hidden">
-              Your message
-            </label>
-            <input
-              id="citizen-message"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder={
-                isListening
-                  ? "Listening… press Stop when finished"
+          <>
+            <p className="text-fallback-hint">
+              Prefer typing? Use the message box as a fallback. Speak remains the primary action.
+            </p>
+            <form className="composer voice-first" onSubmit={(e) => void onSend(e)}>
+              <button
+                type="button"
+                className={
+                  isListening
+                    ? "speak-btn listening"
+                    : isVoiceProcessing
+                      ? "speak-btn processing"
+                      : isServicePlaying
+                        ? "speak-btn playing"
+                        : "speak-btn primary"
+                }
+                disabled={(busy && !isListening) || !applicationId || isVoiceProcessing}
+                onClick={() => void toggleRecord()}
+                aria-pressed={isListening}
+                aria-busy={isVoiceProcessing}
+                aria-label={
+                  isListening
+                    ? "Stop listening"
+                    : isVoiceProcessing
+                      ? "Processing speech"
+                      : isServicePlaying
+                        ? "Playing response — press to speak and interrupt"
+                        : "Start voice recording"
+                }
+              >
+                {isListening && (
+                  <span className="speak-btn-indicator" aria-hidden="true">
+                    <span className="voice-recording-dot" />
+                  </span>
+                )}
+                {isListening
+                  ? "Listening…"
                   : isVoiceProcessing
-                    ? "Processing speech…"
-                    : prompt || "Type your reply or use the buttons above…"
-              }
-              disabled={busy || !applicationId || isListening}
-              aria-label="Your message"
-            />
-            <button
-              type="submit"
-              disabled={
-                busy || !applicationId || !input.trim() || isListening || isVoiceProcessing
-              }
-            >
-              Send
-            </button>
-            <button
-              type="button"
-              className={
-                isListening
-                  ? "speak-btn listening"
-                  : isVoiceProcessing
-                    ? "speak-btn processing"
-                    : "ghost speak-btn"
-              }
-              disabled={(busy && !isListening) || !applicationId || isVoiceProcessing}
-              onClick={() => void toggleRecord()}
-              aria-pressed={isListening}
-              aria-busy={isVoiceProcessing}
-              aria-label={
-                isListening
-                  ? "Stop listening"
-                  : isVoiceProcessing
-                    ? "Processing speech"
-                    : "Start voice recording"
-              }
-            >
-              {isListening && (
-                <span className="speak-btn-indicator" aria-hidden="true">
-                  <span className="voice-recording-dot" />
-                </span>
-              )}
-              {isListening ? "Listening…" : isVoiceProcessing ? "Processing…" : "Speak"}
-            </button>
-          </form>
+                    ? "Processing…"
+                    : isServicePlaying
+                      ? "Playing…"
+                      : "Speak"}
+              </button>
+              <label htmlFor="citizen-message" className="visually-hidden">
+                Your message
+              </label>
+              <input
+                id="citizen-message"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder={
+                  isListening
+                    ? "Listening… press Stop when finished"
+                    : isVoiceProcessing
+                      ? "Processing speech…"
+                      : "Type a reply (optional fallback)…"
+                }
+                disabled={busy || !applicationId || isListening}
+                aria-label="Your message"
+              />
+              <button
+                type="submit"
+                className="send-btn"
+                disabled={
+                  busy || !applicationId || !input.trim() || isListening || isVoiceProcessing
+                }
+              >
+                Send
+              </button>
+            </form>
+          </>
         )}
       </div>
     </section>
   );
+
 }

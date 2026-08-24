@@ -129,11 +129,13 @@ def _prepare_date_transcript(text: str) -> str:
 
 
 def normalize_spoken_date(text: str) -> str | None:
-    """Normalize spoken/STT date input to ``DD/MM/YYYY`` digits, or None.
+    """Normalize spoken/STT/text date input to ``DD/MM/YYYY`` digits, or None.
 
-    Returns None when the transcript is not a clear date attempt or does not
-    yield exactly eight digits (DD+MM+YYYY). Does not invent missing digits.
-    Calendar/future checks remain in ``validate_field``.
+    Accepts slash/dash/dot/space separators, compact ``DDMMYYYY``, month words,
+    and spaced STT digit streams. Returns None when the transcript is not a
+    clear date attempt or does not yield exactly eight digits (DD+MM+YYYY).
+    Does not invent missing digits. Calendar/future checks remain in
+    ``validate_field``.
     """
     raw = (text or "").strip()
     if not raw or not looks_like_date_attempt(raw):
@@ -144,6 +146,40 @@ def normalize_spoken_date(text: str) -> str | None:
     if len(digits) != 8:
         return None
     return f"{digits[0:2]}/{digits[2:4]}/{digits[4:8]}"
+
+
+_MONTH_NAMES_EN = (
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+)
+
+
+def format_date_for_citizen(value: str) -> str:
+    """Present a stored ``DD/MM/YYYY`` date naturally for citizen confirmation.
+
+    Returns the original string when parsing fails (caller may still show it).
+    """
+    raw = (value or "").strip()
+    if not raw:
+        return raw
+    match = re.fullmatch(r"(\d{2})/(\d{2})/(\d{4})", raw)
+    if not match:
+        return raw
+    day, month, year = match.groups()
+    month_i = int(month)
+    if month_i < 1 or month_i > 12:
+        return raw
+    return f"{int(day)} {_MONTH_NAMES_EN[month_i - 1]} {year}"
 
 
 def normalize_spoken_number_field(text: str) -> str | None:

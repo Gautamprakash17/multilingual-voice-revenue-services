@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_gateway
@@ -16,6 +16,8 @@ from app.boundary.gateway import DataBoundaryGateway
 from app.core.database import get_db
 from app.services.catalogue import get_service
 from app.services.documents import DocumentValidationError, store_document
+from app.services.i18n import document_label
+from app.services.i18n import t as i18n_t
 from app.services.journey import JourneyService
 from app.services.state_machine import InvalidTransitionError
 
@@ -181,6 +183,7 @@ async def upload_document(
     document_code: str,
     request: Request,
     file: UploadFile = File(...),
+    document_type: str | None = Form(default=None),
     db: Session = Depends(get_db),
     gateway: DataBoundaryGateway = Depends(get_gateway),
     x_session_token: str | None = Header(default=None),
@@ -216,14 +219,27 @@ async def upload_document(
             trace_id=_trace(request),
             form_data=dict(app.form_data or {}),
             gateway=gateway,
+            document_type=document_type,
         )
         db.refresh(app)
         reply = service.after_document_upload(
-            application_id, session.access_token, trace_id=_trace(request)
+            application_id,
+            session.access_token,
+            trace_id=_trace(request),
+            document_code=doc_def.code,
         )
         db.commit()
     except DocumentValidationError as exc:
         db.rollback()
+        lang = app.language or "en"
+        category = document_label(doc_def.code, catalogue, lang)
+        detail = str(exc)
+        if "Document type is required" in detail:
+            detail = i18n_t("document_type_required", lang)
+        elif "is not accepted" in detail:
+            detail = i18n_t(
+                "document_type_unsupported", lang, document_name=category
+            )
         try:
             svc = JourneyService(db)
             app2 = svc._get_app_by_ref(application_id)
@@ -231,19 +247,20 @@ async def upload_document(
                 reply = svc.mark_document_rejected(
                     application_id,
                     token,
-                    reason=str(exc),
+                    reason=detail,
                     trace_id=_trace(request),
                 )
                 db.commit()
                 response = _to_response(reply)
                 response.error = "document_rejected"
+                response.message = detail
                 return response
-            raise HTTPException(status_code=400, detail=str(exc)) from None
+            raise HTTPException(status_code=400, detail=detail) from None
         except HTTPException:
             raise
         except Exception:
             db.rollback()
-            raise HTTPException(status_code=400, detail=str(exc)) from None
+            raise HTTPException(status_code=400, detail=detail) from None
     except InvalidTransitionError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from None

@@ -297,4 +297,10 @@ def speech_value_for_confirmation(field_name: str | None, value: str) -> str:
     if field_name in DIGIT_SPEECH_CONFIRM_FIELDS:
         spaced = format_digits_for_speech(value)
         return spaced if spaced else value
+    if field_name == "date_of_birth" or (
+        value and re.fullmatch(r"\d{2}/\d{2}/\d{4}", (value or "").strip())
+    ):
+        from app.speech.dates import format_date_for_citizen
+
+        return format_date_for_citizen(value)
     return value

@@ -1,18 +1,26 @@
+import { Link } from "react-router-dom";
+
 const SURFACES = [
   {
     title: "Citizen",
-    blurb: "Voice and text certificate applications on the Apply page.",
+    blurb: "Voice and text certificate applications with guided steps, documents, and payment.",
     status: "Available",
+    to: "/journey",
+    cta: "Open Apply",
   },
   {
-    title: "Channel Simulator",
-    blurb: "WhatsApp and IVR simulators using the same service journey.",
+    title: "Channel Simulators",
+    blurb: "WhatsApp + IVR demonstration simulators that use the same service journey.",
     status: "Available",
+    to: "/whatsapp",
+    cta: "Open WhatsApp simulator",
   },
   {
-    title: "Officer Dashboard",
-    blurb: "Queue, approve, reject, request correction, and escalate.",
+    title: "Officer",
+    blurb: "Review applications, approve and issue, request corrections, reject, or escalate.",
     status: "Available",
+    to: "/officer",
+    cta: "Open Officer review",
   },
 ];
 
@@ -21,17 +29,24 @@ export default function PlaceholdersPage() {
     <section className="panel">
       <h1>Service surfaces</h1>
       <p className="lede">
-        Overview of citizen, channel, and officer surfaces available in this demonstration.
+        Citizen, channel, and officer surfaces available in this demonstration.
       </p>
       <div className="grid three">
         {SURFACES.map((surface) => (
-          <article key={surface.title} className="card placeholder">
+          <article key={surface.title} className="card surface-card">
             <h2>{surface.title}</h2>
             <p>{surface.blurb}</p>
             <span className="chip">{surface.status}</span>
+            <Link className="surface-link" to={surface.to}>
+              {surface.cta} →
+            </Link>
           </article>
         ))}
       </div>
+      <p className="muted" style={{ marginTop: "1.25rem" }}>
+        Also available:{" "}
+        <Link to="/ivr">IVR Simulator</Link> for telephone-style keypad and speech practice.
+      </p>
     </section>
   );
 }

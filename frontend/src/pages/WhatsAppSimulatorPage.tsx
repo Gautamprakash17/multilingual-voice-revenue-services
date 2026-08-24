@@ -1,43 +1,183 @@
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
+  fetchServices,
   resumeChannel,
   sendChannelMessage,
   startChannel,
+  uploadDocument,
   type JourneyResponse,
+  type ServiceDocumentConfig,
 } from "../api/client";
+import { citizenVisibleText } from "../journey/chatText";
+import { documentLabel } from "../journey/labels";
+import {
+  lookupSessionHandoff,
+  storeSessionHandoff,
+  type WhatsAppResumeNavState,
+} from "../journey/sessionHandoff";
+import {
+  waComposerAction,
+  waMessageInputAutocomplete,
+} from "../journey/whatsappComposer";
 
-type Msg = { from: "me" | "bot"; text: string };
+type Msg = {
+  from: "me" | "bot" | "attach";
+  text: string;
+  at: number;
+  attachStatus?: "pending" | "uploaded" | "failed";
+  attachMeta?: { filename: string; categoryLabel: string; typeLabel?: string };
+};
 
 /**
- * WhatsApp-like simulator — same MessageEnvelope / journey backend.
- * Resume: paste Application ID + session token from Web to continue.
+ * WhatsApp-like simulator — same MessageEnvelope / journey / document upload API.
+ * Cross-channel resume uses the existing resume API with X-Session-Token passed
+ * internally from Apply (sessionStorage / navigation), never as a citizen field.
  */
 export default function WhatsAppSimulatorPage() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [serviceDocuments, setServiceDocuments] = useState<ServiceDocumentConfig[]>([]);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [applicationId, setApplicationId] = useState("");
   const [token, setToken] = useState("");
   const [resumeAppId, setResumeAppId] = useState("");
-  const [resumeToken, setResumeToken] = useState("");
   const [state, setState] = useState("—");
   const [language, setLanguage] = useState("en");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [missingDocs, setMissingDocs] = useState<string[]>([]);
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+  const [attachDraftOpen, setAttachDraftOpen] = useState(false);
+  const [attachType, setAttachType] = useState("");
+  const [attachFile, setAttachFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const threadEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const messageInputRef = useRef<HTMLInputElement>(null);
+  const autoResumeDone = useRef(false);
 
-  function apply(reply: JourneyResponse) {
+  useEffect(() => {
+    void fetchServices().then((catalog) => {
+      const svc =
+        catalog.services.find((s) => s.code === "INCOME_CERTIFICATE") ||
+        catalog.services[0];
+      setServiceDocuments(svc?.documents || []);
+    });
+  }, []);
+
+  const nextDoc = useMemo(() => {
+    const code = missingDocs[0] || "";
+    return serviceDocuments.find((d) => d.code === code) || null;
+  }, [missingDocs, serviceDocuments]);
+
+  const canAttach =
+    Boolean(token) &&
+    (state === "DOCUMENT_CAPTURE" || state === "DOCUMENT_REJECTED") &&
+    missingDocs.length > 0;
+
+  const composerAction = waComposerAction(input);
+
+  useEffect(() => {
+    threadEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, attachDraftOpen]);
+
+  useEffect(() => {
+    const first = nextDoc?.accepted_types?.[0]?.code || "";
+    setAttachType(first);
+  }, [nextDoc]);
+
+  useEffect(() => {
+    if (!canAttach) {
+      setAttachMenuOpen(false);
+      setAttachDraftOpen(false);
+      setAttachFile(null);
+    }
+  }, [canAttach]);
+
+  function apply(reply: JourneyResponse, opts?: { skipBotBubble?: boolean }) {
     setApplicationId(reply.application_id);
-    if (reply.access_token) setToken(reply.access_token);
+    if (reply.access_token) {
+      setToken(reply.access_token);
+      storeSessionHandoff(reply.application_id, reply.access_token);
+    }
     setState(reply.state);
     if (reply.language) setLanguage(reply.language);
-    const text = [reply.message, reply.prompt].filter(Boolean).join("\n");
-    setMessages((m) => [...m, { from: "bot", text }]);
+    const missing = reply.data?.missing_documents;
+    if (Array.isArray(missing)) {
+      setMissingDocs(missing.map(String));
+    } else if (reply.state !== "DOCUMENT_CAPTURE" && reply.state !== "DOCUMENT_REJECTED") {
+      setMissingDocs([]);
+    }
+    if (opts?.skipBotBubble) return;
+    const text = citizenVisibleText(reply.message || "", reply.prompt);
+    if (text) {
+      setMessages((m) => [...m, { from: "bot", text, at: Date.now() }]);
+    }
   }
+
+  async function doResume(appId: string, sessionToken: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      const reply = await resumeChannel(appId, sessionToken, "whatsapp");
+      apply(reply, { skipBotBubble: true });
+      const serviceText = citizenVisibleText(reply.message || "", reply.prompt);
+      setMessages([
+        {
+          from: "bot",
+          text: `Continuing application ${reply.application_id}`,
+          at: Date.now(),
+        },
+        ...(serviceText
+          ? [{ from: "bot" as const, text: serviceText, at: Date.now() + 1 }]
+          : []),
+      ]);
+      setResumeAppId("");
+    } catch (err) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : "Could not continue this application. Check the Application ID and try again.";
+      setError(
+        /403|denied|invalid|not found|404/i.test(msg)
+          ? "This application could not be continued. It may be invalid or the session is no longer available. Start again from Apply, or use Continue on WhatsApp from that page."
+          : msg,
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    if (autoResumeDone.current) return;
+    const nav = location.state as WhatsAppResumeNavState | null;
+    if (nav?.resumeFromWeb && nav.applicationId) {
+      autoResumeDone.current = true;
+      const handoffToken = lookupSessionHandoff(nav.applicationId);
+      if (handoffToken) {
+        void doResume(nav.applicationId, handoffToken);
+      } else {
+        setError(
+          "Could not continue securely from Apply. Start the application again and choose Continue on WhatsApp.",
+        );
+        setResumeAppId(nav.applicationId);
+      }
+      navigate(location.pathname, { replace: true, state: null });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot handoff on mount
+  }, []);
 
   async function onStart() {
     setBusy(true);
     setError(null);
     setMessages([]);
+    setMissingDocs([]);
+    setAttachFile(null);
+    setAttachDraftOpen(false);
+    setAttachMenuOpen(false);
     try {
       apply(await startChannel("whatsapp"));
     } catch (err) {
@@ -47,33 +187,26 @@ export default function WhatsAppSimulatorPage() {
     }
   }
 
-  async function onResume() {
-    if (!resumeAppId || !resumeToken) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const reply = await resumeChannel(resumeAppId, resumeToken, "whatsapp");
-      apply(reply);
-      setMessages((m) => [
-        ...m,
-        {
-          from: "bot",
-          text: `Resumed ${reply.application_id} (lang=${reply.language || "—"})`,
-        },
-      ]);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Resume failed");
-    } finally {
-      setBusy(false);
+  async function onContinueByAppId() {
+    const appId = resumeAppId.trim();
+    if (!appId) return;
+    const handoffToken = lookupSessionHandoff(appId);
+    if (!handoffToken) {
+      setError(
+        "No secure session was found for this Application ID in this browser. Open Apply, then choose Continue on WhatsApp — you do not need to enter a session token.",
+      );
+      return;
     }
+    await doResume(appId, handoffToken);
   }
 
   async function onSend(e: FormEvent) {
     e.preventDefault();
-    if (!applicationId || !token || !input.trim()) return;
+    if (!applicationId || !token || !input.trim() || uploading) return;
     const text = input.trim();
     setInput("");
-    setMessages((m) => [...m, { from: "me", text }]);
+    setAttachMenuOpen(false);
+    setMessages((m) => [...m, { from: "me", text, at: Date.now() }]);
     setBusy(true);
     try {
       apply(
@@ -89,13 +222,104 @@ export default function WhatsAppSimulatorPage() {
     }
   }
 
+  function openDocumentPicker() {
+    setAttachMenuOpen(false);
+    // Do not open draft until a file is chosen — avoids a permanent form control.
+    fileInputRef.current?.click();
+  }
+
+  function onFilePicked(file: File | null) {
+    if (!file) return;
+    setAttachFile(file);
+    setAttachDraftOpen(true);
+  }
+
+  function clearAttachDraft() {
+    setAttachDraftOpen(false);
+    setAttachFile(null);
+    setAttachMenuOpen(false);
+  }
+
+  async function onAttachUpload() {
+    if (!applicationId || !token || !attachFile || !nextDoc || uploading) return;
+    const accepted = nextDoc.accepted_types || [];
+    const typeCode = attachType || accepted[0]?.code;
+    if (accepted.length > 0 && !typeCode) {
+      setError("Choose a document type before sending.");
+      return;
+    }
+    const categoryLabel = nextDoc.label || documentLabel(nextDoc.code);
+    const typeLabel =
+      accepted.find((t) => t.code === typeCode)?.label || undefined;
+    const filename = attachFile.name;
+    setUploading(true);
+    setBusy(true);
+    setError(null);
+    setMessages((m) => [
+      ...m,
+      {
+        from: "attach",
+        text: filename,
+        at: Date.now(),
+        attachStatus: "pending",
+        attachMeta: { filename, categoryLabel, typeLabel },
+      },
+    ]);
+    try {
+      const reply = await uploadDocument(
+        applicationId,
+        token,
+        nextDoc.code,
+        attachFile,
+        typeCode,
+      );
+      setMessages((m) => {
+        const next = [...m];
+        for (let i = next.length - 1; i >= 0; i -= 1) {
+          if (next[i].from === "attach" && next[i].attachStatus === "pending") {
+            next[i] = { ...next[i], attachStatus: "uploaded" };
+            break;
+          }
+        }
+        return next;
+      });
+      clearAttachDraft();
+      apply(reply);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Upload failed. Please try again.";
+      setError(msg);
+      setMessages((m) => {
+        const next = [...m];
+        for (let i = next.length - 1; i >= 0; i -= 1) {
+          if (next[i].from === "attach" && next[i].attachStatus === "pending") {
+            next[i] = { ...next[i], attachStatus: "failed" };
+            break;
+          }
+        }
+        return next;
+      });
+    } finally {
+      setUploading(false);
+      setBusy(false);
+    }
+  }
+
+  function formatTime(at: number): string {
+    return new Date(at).toLocaleTimeString(undefined, {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+
   return (
     <section className="panel wa-sim">
+      <span className="sim-banner" role="status">
+        Demonstration simulator — not a live WhatsApp account
+      </span>
       <h1>WhatsApp Simulator</h1>
       <p className="lede">
-        Practice the same certificate journey in a WhatsApp-style chat. This is a simulator,
-        not a live WhatsApp account. You can resume a web application with its ID and session
-        token.
+        Same certificate journey as Apply. Continue from the web with your Application ID, or
+        start a new WhatsApp session.
       </p>
       {error && (
         <div className="alert error" role="alert">
@@ -105,7 +329,12 @@ export default function WhatsAppSimulatorPage() {
 
       <div className="section-card">
         <div className="journey-actions">
-          <button type="button" onClick={() => void onStart()} disabled={busy}>
+          <button
+            type="button"
+            className="btn-success"
+            onClick={() => void onStart()}
+            disabled={busy || uploading}
+          >
             New WhatsApp session
           </button>
           <span className="state-pill" aria-label={`State ${state}`}>
@@ -116,57 +345,236 @@ export default function WhatsAppSimulatorPage() {
       </div>
 
       <div className="card resume-box">
-        <h2>Resume from web application</h2>
+        <h2>Continue an existing application</h2>
+        <p className="muted">
+          Prefer <strong>Continue on WhatsApp</strong> from the Apply page. Or enter your
+          Application ID if you started in this browser.
+        </p>
         <label htmlFor="wa-resume-app">
           Application ID
           <input
             id="wa-resume-app"
+            name="wa-application-id"
             placeholder="INC-xxxx"
             value={resumeAppId}
             onChange={(e) => setResumeAppId(e.target.value)}
+            autoComplete="off"
+            autoCorrect="off"
+            spellCheck={false}
           />
         </label>
-        <label htmlFor="wa-resume-token">
-          Session token
-          <input
-            id="wa-resume-token"
-            placeholder="Paste web session token"
-            value={resumeToken}
-            onChange={(e) => setResumeToken(e.target.value)}
-          />
-        </label>
-        <button type="button" onClick={() => void onResume()} disabled={busy}>
-          Resume on WhatsApp
+        <button
+          type="button"
+          onClick={() => void onContinueByAppId()}
+          disabled={busy || uploading || !resumeAppId.trim()}
+        >
+          Continue application
         </button>
       </div>
 
-      <div className="wa-thread" role="log" aria-live="polite">
-        {messages.length === 0 && (
-          <div className="wa-bubble bot">Start a session or resume from the web Apply page.</div>
-        )}
-        {messages.map((m, i) => (
-          <div key={i} className={`wa-bubble ${m.from}`}>
-            {m.text}
+      <div className="wa-shell">
+        <div className="wa-header">
+          <strong>Revenue Services</strong>
+          <span>
+            {applicationId
+              ? `${applicationId} · ${state}`
+              : "Start a session or continue from Apply"}
+          </span>
+        </div>
+        <div className="wa-thread" role="log" aria-live="polite" aria-relevant="additions">
+          {messages.length === 0 && (
+            <div className="wa-empty">
+              <p>
+                No messages yet. Choose <strong>New WhatsApp session</strong>, or continue from
+                Apply with <strong>Continue on WhatsApp</strong>.
+              </p>
+            </div>
+          )}
+          {messages.map((m, i) =>
+            m.from === "attach" && m.attachMeta ? (
+              <div
+                key={`${m.at}-${i}`}
+                className={`wa-bubble me wa-attach-bubble${
+                  m.attachStatus === "uploaded" ? " uploaded" : ""
+                }`}
+              >
+                <span className="wa-attach-icon" aria-hidden="true">
+                  📄
+                </span>
+                <div className="wa-attach-body">
+                  <strong>{m.attachMeta.filename}</strong>
+                  <span>
+                    {m.attachMeta.categoryLabel}
+                    {m.attachMeta.typeLabel ? ` · ${m.attachMeta.typeLabel}` : ""}
+                  </span>
+                  <span className="wa-attach-status">
+                    {m.attachStatus === "pending" && "Sending…"}
+                    {m.attachStatus === "uploaded" && "Uploaded ✓"}
+                    {m.attachStatus === "failed" && "Failed — try again"}
+                  </span>
+                </div>
+                <time className="wa-bubble-time" dateTime={new Date(m.at).toISOString()}>
+                  {formatTime(m.at)}
+                </time>
+              </div>
+            ) : (
+              <div key={`${m.at}-${i}`} className={`wa-bubble ${m.from}`}>
+                <span className="wa-bubble-text">{m.text}</span>
+                <time className="wa-bubble-time" dateTime={new Date(m.at).toISOString()}>
+                  {formatTime(m.at)}
+                </time>
+              </div>
+            ),
+          )}
+          <div ref={threadEndRef} />
+        </div>
+
+        {attachDraftOpen && canAttach && nextDoc && attachFile && (
+          <div className="wa-attach-draft" aria-label="Document attachment draft">
+            <p className="wa-attach-draft-hint muted">Demo documents only</p>
+            <p className="wa-attach-draft-title">
+              Document
+              <strong>{attachFile.name}</strong>
+            </p>
+            <p className="meta">
+              {nextDoc.label || documentLabel(nextDoc.code)}
+            </p>
+            {(nextDoc.accepted_types || []).length > 0 && (
+              <div className="doc-type-options" role="group" aria-label="Document type">
+                <span className="wa-attach-type-label">Type</span>
+                {(nextDoc.accepted_types || []).map((t) => (
+                  <button
+                    key={t.code}
+                    type="button"
+                    className={attachType === t.code ? "doc-type-btn active" : "doc-type-btn"}
+                    aria-pressed={attachType === t.code}
+                    disabled={busy || uploading}
+                    onClick={() => setAttachType(t.code)}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="wa-attach-draft-actions">
+              <button
+                type="button"
+                className="ghost"
+                disabled={uploading}
+                onClick={clearAttachDraft}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={
+                  busy ||
+                  uploading ||
+                  ((nextDoc.accepted_types || []).length > 0 && !attachType)
+                }
+                onClick={() => void onAttachUpload()}
+              >
+                {uploading ? "Sending…" : "Send document"}
+              </button>
+            </div>
           </div>
-        ))}
-      </div>
+        )}
 
-      <form className="composer" onSubmit={(e) => void onSend(e)}>
-        <label htmlFor="wa-message" className="visually-hidden">
-          WhatsApp message
-        </label>
+        {/* Hidden until 📎 → Document; never shown as a permanent form control */}
         <input
-          id="wa-message"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Type a message…"
-          disabled={busy || !token}
-          aria-label="WhatsApp message"
+          ref={fileInputRef}
+          id="wa-file-picker"
+          type="file"
+          className="visually-hidden"
+          accept=".pdf,.png,.jpg,.jpeg"
+          tabIndex={-1}
+          aria-label="Choose document file"
+          onChange={(e) => {
+            onFilePicked(e.target.files?.[0] ?? null);
+            e.target.value = "";
+          }}
         />
-        <button type="submit" disabled={busy || !token || !input.trim()}>
-          Send
-        </button>
-      </form>
+
+        <form
+          className="wa-composer"
+          onSubmit={(e) => void onSend(e)}
+          autoComplete="off"
+        >
+          <div className="wa-attach-wrap">
+            <button
+              type="button"
+              className="wa-attach-trigger"
+              aria-label={
+                canAttach
+                  ? "Attach document"
+                  : "Attach document (available when documents are required)"
+              }
+              aria-expanded={attachMenuOpen}
+              aria-haspopup="menu"
+              disabled={!canAttach || busy || uploading}
+              title={
+                canAttach
+                  ? "Attach a document"
+                  : "Document attachment is available when documents are required"
+              }
+              onClick={() => setAttachMenuOpen((open) => !open)}
+            >
+              <span aria-hidden="true">📎</span>
+            </button>
+            {attachMenuOpen && canAttach && (
+              <div className="wa-attach-menu" role="menu">
+                <button
+                  type="button"
+                  role="menuitem"
+                  aria-controls="wa-file-picker"
+                  onClick={openDocumentPicker}
+                >
+                  Document
+                </button>
+              </div>
+            )}
+          </div>
+
+          <label htmlFor="wa-message" className="visually-hidden">
+            Message
+          </label>
+          <input
+            ref={messageInputRef}
+            id="wa-message"
+            name="wa-chat-message"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Type a message…"
+            disabled={busy || !token || uploading}
+            aria-label="Type a message"
+            autoCapitalize="off"
+            inputMode="text"
+            {...waMessageInputAutocomplete()}
+          />
+
+          {composerAction === "send" ? (
+            <button
+              type="submit"
+              className="wa-composer-send"
+              disabled={busy || !token || !input.trim() || uploading}
+              aria-label="Send message"
+            >
+              Send
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="wa-composer-mic"
+              disabled={!token || busy || uploading}
+              aria-label="Voice messages are not available in this simulator — type a message"
+              title="Voice messages are not available in this simulator — type a message"
+              onClick={() => messageInputRef.current?.focus()}
+            >
+              <span aria-hidden="true">🎤</span>
+            </button>
+          )}
+        </form>
+      </div>
     </section>
   );
 }

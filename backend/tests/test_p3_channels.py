@@ -747,6 +747,7 @@ async def test_p2_journey_auth_consent_docs_submit_still_work(
             application_pk=app.id,
             document_def=doc,
             upload=upload,
+            document_type=(doc.accepted_types[0].code if doc.accepted_types else None),
             actor_id=app.applicant_id,
             trace_id="p2",
         )

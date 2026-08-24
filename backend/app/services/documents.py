@@ -52,11 +52,29 @@ async def store_document(
     trace_id: str | None,
     form_data: dict[str, Any] | None = None,
     gateway: DataBoundaryGateway | None = None,
+    document_type: str | None = None,
 ) -> StoredDocument:
     content = await upload.read()
     size = len(content)
     mime = (upload.content_type or "application/octet-stream").split(";")[0].strip()
     filename = upload.filename or "upload.bin"
+
+    selected_type: str | None = None
+    if document_def.accepted_types:
+        if not document_type or not str(document_type).strip():
+            raise DocumentValidationError(
+                f"Document type is required for {document_def.code}"
+            )
+        match = document_def.accepted_type_by_code(str(document_type))
+        if match is None:
+            allowed = ", ".join(t.code for t in document_def.accepted_types)
+            raise DocumentValidationError(
+                f"Document type '{document_type}' is not accepted for "
+                f"{document_def.code}. Allowed: {allowed}"
+            )
+        selected_type = match.code
+    elif document_type and str(document_type).strip():
+        selected_type = str(document_type).strip().upper()
 
     if mime not in document_def.allowed_mime_types:
         raise DocumentValidationError(
@@ -114,12 +132,15 @@ async def store_document(
         actor_id=actor_id,
         metadata={
             "document_code": document_def.code,
+            "document_type": selected_type,
             "outcome": verification.outcome.value,
             "ocr_provider": ocr.provider,
             "verify_provider": verification.provider,
             # never store extracted citizen field values
         },
     )
+
+    type_note = f"document_type={selected_type}" if selected_type else None
 
     existing = (
         db.query(DocumentRecord)
@@ -142,6 +163,8 @@ async def store_document(
         existing.verification_status = verification.outcome.value
         existing.verification_reason = verification.reason
         existing.ocr_provider = ocr.provider
+        if type_note:
+            existing.notes = type_note
         record = existing
     else:
         record = DocumentRecord(
@@ -156,6 +179,7 @@ async def store_document(
             verification_status=verification.outcome.value,
             verification_reason=verification.reason,
             ocr_provider=ocr.provider,
+            notes=type_note,
         )
         db.add(record)
 
@@ -168,6 +192,7 @@ async def store_document(
         actor_id=actor_id,
         metadata={
             "document_code": document_def.code,
+            "document_type": selected_type,
             "mime_type": mime,
             "size_bytes": size,
             "checksum_sha256": checksum,

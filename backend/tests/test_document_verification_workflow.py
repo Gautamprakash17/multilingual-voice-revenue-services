@@ -78,6 +78,7 @@ async def _upload_all(
             application_pk=app.id,
             document_def=doc,
             upload=upload,
+            document_type=(doc.accepted_types[0].code if doc.accepted_types else None),
             actor_id=app.applicant_id,
             trace_id="doc",
             form_data=dict(app.form_data or {}),
@@ -171,6 +172,7 @@ async def test_document_unreadable_recovery(
         application_pk=app.id,
         document_def=doc,
         upload=upload,
+            document_type=(doc.accepted_types[0].code if doc.accepted_types else None),
         actor_id=app.applicant_id,
         trace_id="unreadable",
         form_data=dict(app.form_data or {}),
@@ -194,6 +196,7 @@ async def test_document_unreadable_recovery(
         application_pk=app.id,
         document_def=doc,
         upload=upload2,
+            document_type=(doc.accepted_types[0].code if doc.accepted_types else None),
         actor_id=app.applicant_id,
         trace_id="unreadable",
         form_data=dict(app.form_data or {}),
@@ -236,6 +239,7 @@ async def test_document_mismatch_recovery(
         application_pk=app.id,
         document_def=doc,
         upload=upload,
+            document_type=(doc.accepted_types[0].code if doc.accepted_types else None),
         actor_id=app.applicant_id,
         trace_id="mm",
         form_data=dict(app.form_data or {}),
@@ -260,6 +264,7 @@ async def test_document_mismatch_recovery(
         application_pk=app.id,
         document_def=doc,
         upload=upload2,
+            document_type=(doc.accepted_types[0].code if doc.accepted_types else None),
         actor_id=app.applicant_id,
         trace_id="mm",
         form_data=dict(app.form_data or {}),
@@ -300,6 +305,11 @@ async def test_restricted_document_never_reaches_cloud(
         application_pk=app.id,
         document_def=service.documents[0],
         upload=upload,
+        document_type=(
+            service.documents[0].accepted_types[0].code
+            if service.documents[0].accepted_types
+            else None
+        ),
         actor_id=app.applicant_id,
         trace_id="bound",
         form_data=dict(app.form_data or {}),

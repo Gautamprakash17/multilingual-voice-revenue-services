@@ -41,9 +41,14 @@ REQUIRED_KEYS = (
     "document_reupload",
     "document_verification_failed",
     "document_stored",
+    "document_uploaded_ok",
     "document_all_uploaded",
     "document_rejected",
     "document_upload_required",
+    "document_ivr_continue",
+    "document_choose_type",
+    "document_type_required",
+    "document_type_unsupported",
     "review_intro",
     "fee_quote",
     "payment_prompt",
@@ -165,6 +170,21 @@ def document_label(
     if doc and doc.label:
         return doc.label
     return document_code.replace("_", " ")
+
+
+def document_type_label(
+    document_type: str, service: ServiceDefinition, language: str = "en"
+) -> str:
+    """Citizen-facing accepted document type label (Aadhaar, PAN, …)."""
+    key = f"document_type_{document_type.lower()}"
+    translated = t(key, language)
+    if translated != key:
+        return translated
+    for doc in service.documents:
+        match = doc.accepted_type_by_code(document_type)
+        if match:
+            return match.label
+    return document_type.replace("_", " ").title()
 
 
 def document_next_prompt(

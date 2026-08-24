@@ -20,12 +20,23 @@ class FieldDef:
 
 
 @dataclass
+class AcceptedDocumentType:
+    code: str
+    label: str
+
+
+@dataclass
 class DocumentDef:
     code: str
     required: bool
     label: str
     allowed_mime_types: list[str]
     max_size_bytes: int
+    accepted_types: list[AcceptedDocumentType] = field(default_factory=list)
+
+    def accepted_type_by_code(self, code: str) -> AcceptedDocumentType | None:
+        needle = (code or "").strip().upper()
+        return next((t for t in self.accepted_types if t.code == needle), None)
 
 
 @dataclass
@@ -99,6 +110,14 @@ def load_service_definition(path: Path) -> ServiceDefinition:
             label=d.get("label", d["code"]),
             allowed_mime_types=list(d.get("allowed_mime_types") or []),
             max_size_bytes=int(d.get("max_size_bytes", 5_242_880)),
+            accepted_types=[
+                AcceptedDocumentType(
+                    code=str(item["code"]).upper(),
+                    label=str(item.get("label") or item["code"]),
+                )
+                for item in (d.get("accepted_types") or [])
+                if item.get("code")
+            ],
         )
         for d in raw.get("documents", [])
     ]

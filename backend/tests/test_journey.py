@@ -91,6 +91,7 @@ async def _upload_all(
             application_pk=app.id,
             document_def=doc,
             upload=upload,
+            document_type=(doc.accepted_types[0].code if doc.accepted_types else None),
             actor_id=app.applicant_id,
             trace_id="doc",
         )
@@ -282,6 +283,7 @@ async def test_document_mime_rejection_checksum_and_classification(
             application_pk=app.id,
             document_def=doc,
             upload=bad,
+            document_type=(doc.accepted_types[0].code if doc.accepted_types else None),
             actor_id=app.applicant_id,
             trace_id="mime",
         )
@@ -297,6 +299,7 @@ async def test_document_mime_rejection_checksum_and_classification(
         application_pk=app.id,
         document_def=doc,
         upload=good,
+            document_type=(doc.accepted_types[0].code if doc.accepted_types else None),
         actor_id=app.applicant_id,
         trace_id="ok",
     )

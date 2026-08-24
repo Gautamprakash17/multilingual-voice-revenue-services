@@ -24,6 +24,10 @@ function statusBadgeClass(status: string): string {
   return "badge badge-info";
 }
 
+function serviceName(code: string): string {
+  return code.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 export default function OfficerPage() {
   const [token, setToken] = useState(DEFAULT_TOKEN);
   const [mode, setMode] = useState<OfficerListMode>("applications");
@@ -109,6 +113,14 @@ export default function OfficerPage() {
 
   async function act(action: "approve" | "reject" | "request-correction" | "escalate") {
     if (!selected) return;
+    if (action === "reject" || action === "escalate") {
+      const ok = window.confirm(
+        action === "reject"
+          ? "Reject this application? This cannot be undone from the queue."
+          : "Escalate this application to a senior officer?",
+      );
+      if (!ok) return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -142,12 +154,16 @@ export default function OfficerPage() {
     selected &&
     ["SUBMITTED", "UNDER_REVIEW", "NEEDS_CORRECTION"].includes(selected.processing_status);
 
+  const historyMatch = selected
+    ? history.find((h) => h.application_id === selected.application_id)
+    : undefined;
+
   return (
     <section className="panel">
       <h1>Officer review</h1>
       <p className="lede">
-        Review submitted applications. You can request corrections, approve and issue,
-        reject, or escalate. Completed actions are kept in History.
+        Review submitted applications. Approve and issue, request corrections, reject, or
+        escalate. Completed actions stay in History.
       </p>
 
       <div className="section-card">
@@ -209,7 +225,11 @@ export default function OfficerPage() {
                 <li key={item.application_id}>
                   <button
                     type="button"
-                    className={selected?.application_id === item.application_id ? "active" : ""}
+                    className={
+                      selected?.application_id === item.application_id
+                        ? "active queue-row"
+                        : "queue-row"
+                    }
                     onClick={() => setSelected(item)}
                     aria-pressed={selected?.application_id === item.application_id}
                   >
@@ -220,6 +240,10 @@ export default function OfficerPage() {
                     {item.escalated ? (
                       <span className="badge badge-warning">Escalated</span>
                     ) : null}
+                    <span className="queue-row-meta">
+                      {serviceName(item.service_code)}
+                      {item.created_at ? ` · ${formatOfficerActionAt(item.created_at)}` : ""}
+                    </span>
                   </button>
                 </li>
               ))}
@@ -233,7 +257,9 @@ export default function OfficerPage() {
                   <button
                     type="button"
                     className={
-                      selected?.application_id === item.application_id ? "active history-item" : "history-item"
+                      selected?.application_id === item.application_id
+                        ? "active history-item"
+                        : "history-item"
                     }
                     onClick={() => void selectHistoryItem(item)}
                     aria-pressed={selected?.application_id === item.application_id}
@@ -265,30 +291,94 @@ export default function OfficerPage() {
             </p>
           )}
           {selected && (
-            <>
-              <p>
-                <span className={statusBadgeClass(selected.processing_status)}>
-                  {selected.processing_status}
-                </span>{" "}
-                <span className="badge">{selected.journey_state}</span>
-              </p>
-              <pre className="code-block">
-                {JSON.stringify(
-                  {
-                    application_id: selected.application_id,
-                    service_code: selected.service_code,
-                    processing_status: selected.processing_status,
-                    journey_state: selected.journey_state,
-                    payment_ref: selected.payment_ref,
-                    documents: selected.documents,
-                    fields_present: selected.fields_present,
-                    correction_notes: selected.correction_notes,
-                    escalated: selected.escalated,
-                  },
-                  null,
-                  2,
+            <div className="officer-detail-sections">
+              <section className="officer-section">
+                <h3>Application summary</h3>
+                <dl className="officer-dl">
+                  <dt>Application ID</dt>
+                  <dd>{selected.application_id}</dd>
+                  <dt>Service</dt>
+                  <dd>{serviceName(selected.service_code)}</dd>
+                  <dt>Processing status</dt>
+                  <dd>
+                    <span className={statusBadgeClass(selected.processing_status)}>
+                      {selected.processing_status}
+                    </span>
+                  </dd>
+                  <dt>Journey state</dt>
+                  <dd>
+                    <span className="badge">{selected.journey_state}</span>
+                  </dd>
+                  <dt>Language</dt>
+                  <dd>{selected.language || "—"}</dd>
+                  <dt>Escalated</dt>
+                  <dd>{selected.escalated ? "Yes" : "No"}</dd>
+                </dl>
+              </section>
+
+              <section className="officer-section">
+                <h3>Form information</h3>
+                {selected.fields_present.length === 0 ? (
+                  <p className="muted">No form fields recorded.</p>
+                ) : (
+                  <ul>
+                    {selected.fields_present.map((field) => (
+                      <li key={field}>{field.replace(/_/g, " ")}</li>
+                    ))}
+                  </ul>
                 )}
-              </pre>
+                {selected.correction_notes && (
+                  <p>
+                    <strong>Notes:</strong> {selected.correction_notes}
+                  </p>
+                )}
+              </section>
+
+              <section className="officer-section">
+                <h3>Documents</h3>
+                {selected.documents.length === 0 ? (
+                  <p className="muted">No documents on file.</p>
+                ) : (
+                  <ul>
+                    {selected.documents.map((doc) => (
+                      <li key={String(doc.code)}>
+                        <strong>{String(doc.code).replace(/_/g, " ")}</strong>
+                        {doc.verification_status
+                          ? ` — ${String(doc.verification_status)}`
+                          : ""}
+                        {doc.mime_type ? ` · ${String(doc.mime_type)}` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+
+              <section className="officer-section">
+                <h3>Payment</h3>
+                <dl className="officer-dl">
+                  <dt>Payment completed</dt>
+                  <dd>{selected.payment_completed ? "Yes" : "No"}</dd>
+                  <dt>Payment reference</dt>
+                  <dd>{selected.payment_ref || "—"}</dd>
+                </dl>
+              </section>
+
+              {(historyMatch || mode === "history") && (
+                <section className="officer-section">
+                  <h3>Activity</h3>
+                  <dl className="officer-dl">
+                    <dt>Last officer action</dt>
+                    <dd>{historyMatch?.last_action_label || "—"}</dd>
+                    <dt>Action time</dt>
+                    <dd>
+                      {historyMatch?.action_at
+                        ? formatOfficerActionAt(historyMatch.action_at)
+                        : "—"}
+                    </dd>
+                  </dl>
+                </section>
+              )}
+
               {showActions && (
                 <>
                   <label htmlFor="officer-notes">
@@ -343,13 +433,37 @@ export default function OfficerPage() {
                   </div>
                 </>
               )}
+
               {mode === "history" && (
                 <p className="muted">
-                  Viewing a completed application from History. Switch to Applications to
-                  act on items still in the review queue.
+                  Viewing a completed application from History. Switch to Applications to act
+                  on items still in the review queue.
                 </p>
               )}
-            </>
+
+              <div className="officer-tech">
+                <details>
+                  <summary>Technical details</summary>
+                  <pre className="code-block">
+                    {JSON.stringify(
+                      {
+                        application_id: selected.application_id,
+                        service_code: selected.service_code,
+                        processing_status: selected.processing_status,
+                        journey_state: selected.journey_state,
+                        payment_ref: selected.payment_ref,
+                        documents: selected.documents,
+                        fields_present: selected.fields_present,
+                        correction_notes: selected.correction_notes,
+                        escalated: selected.escalated,
+                      },
+                      null,
+                      2,
+                    )}
+                  </pre>
+                </details>
+              </div>
+            </div>
           )}
         </div>
       </div>

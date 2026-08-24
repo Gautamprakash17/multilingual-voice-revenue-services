@@ -553,7 +553,18 @@ class ChannelOrchestrator:
                 prompt = field_prompt(str(nxt), lang)
         elif state == JourneyState.FIELD_CONFIRMATION.value:
             field = (reply.data or {}).get("field")
-            value = (reply.data or {}).get("proposed_value", "")
+            value = (reply.data or {}).get("proposed_display") or (
+                reply.data or {}
+            ).get("proposed_value", "")
+            if not value and field:
+                raw = (reply.data or {}).get("proposed_value", "")
+                field_def = self.journey.service.field_by_name(str(field))
+                if field_def and field_def.type == "date" and raw:
+                    from app.speech.dates import format_date_for_citizen
+
+                    value = format_date_for_citizen(str(raw))
+                else:
+                    value = raw
             if value:
                 message = t("field_confirm_heard", lang, value=value)
                 prompt = message
@@ -562,12 +573,22 @@ class ChannelOrchestrator:
         elif state == JourneyState.DOCUMENT_CAPTURE.value:
             missing = (reply.data or {}).get("missing_documents") or []
             service = self.journey.service
-            if missing:
+            if (reply.data or {}).get("continue_on_channels"):
+                message = t(
+                    "document_ivr_continue",
+                    lang,
+                    application_id=reply.application_id,
+                )
+                prompt = message
+            elif missing:
                 prompt = document_next_prompt(missing[0], service, lang)
             else:
                 prompt = t("document_prompt", lang)
-            if reply.message and "stored" in reply.message.lower():
-                message = t("document_stored", lang)
+            if reply.error is None and reply.message:
+                # Prefer journey success copy (already localized) when present.
+                lower = reply.message.lower()
+                if "stored" in lower and "uploaded successfully" not in lower:
+                    message = t("document_stored", lang)
         elif state == JourneyState.DOCUMENT_REJECTED.value:
             service = self.journey.service
             doc_code = (reply.data or {}).get("document_code")
@@ -653,7 +674,13 @@ class ChannelOrchestrator:
             return field_prompt(nxt, lang) if nxt else t("form_complete", lang)
         if state == JourneyState.FIELD_CONFIRMATION:
             if app.pending_voice_value:
-                return t("field_confirm_heard", lang, value=app.pending_voice_value)
+                display = app.pending_voice_value
+                field_def = self.journey.service.field_by_name(app.pending_voice_field or "")
+                if field_def and field_def.type == "date":
+                    from app.speech.dates import format_date_for_citizen
+
+                    display = format_date_for_citizen(app.pending_voice_value)
+                return t("field_confirm_heard", lang, value=display)
             field = app.pending_voice_field
             return field_prompt(field, lang) if field else t("form_complete", lang)
         if state == JourneyState.DOCUMENT_CAPTURE:
