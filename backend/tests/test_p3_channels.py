@@ -37,6 +37,8 @@ from fastapi import UploadFile
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
+from tests.auth_helpers import current_otp, expand_step
+
 
 @pytest.fixture
 def identity() -> MockIdentityProvider:
@@ -46,7 +48,6 @@ def identity() -> MockIdentityProvider:
                 id="persona-lakshmi",
                 name="Lakshmi Devi",
                 mobile="9876543210",
-                otp="123456",
             )
         ]
     )
@@ -272,7 +273,7 @@ def test_voice_mobile_otp_full_authentication(orch: ChannelOrchestrator):
             "access_token": token,
             "modality": "text",
             "language": "en",
-            "text": "123456",
+            "text": expand_step(orch.journey.identity, "123456"),
         },
     )
     assert otp_reply.state == JourneyState.CONSENT.value
@@ -281,14 +282,28 @@ def test_voice_mobile_otp_full_authentication(orch: ChannelOrchestrator):
 
 
 @pytest.mark.parametrize(
-    "spoken_otp",
+    "formatter",
     [
-        "1 2 3 4 5 6",
-        "one two three four five six",
-        "1, 2, 3, 4, 5, 6",
+        lambda otp: " ".join(otp),
+        lambda otp: " ".join(
+            {
+                "0": "zero",
+                "1": "one",
+                "2": "two",
+                "3": "three",
+                "4": "four",
+                "5": "five",
+                "6": "six",
+                "7": "seven",
+                "8": "eight",
+                "9": "nine",
+            }[d]
+            for d in otp
+        ),
+        lambda otp: ", ".join(otp),
     ],
 )
-def test_voice_spoken_otp_normalization(orch: ChannelOrchestrator, spoken_otp: str):
+def test_voice_spoken_otp_normalization(orch: ChannelOrchestrator, formatter):
     start = orch.start(channel="web")
     token = start.access_token
     assert token
@@ -313,6 +328,8 @@ def test_voice_spoken_otp_normalization(orch: ChannelOrchestrator, spoken_otp: s
             "transcript": "9876543210",
         },
     )
+    otp = current_otp(orch.journey.identity)  # type: ignore[arg-type]
+    spoken_otp = formatter(otp)
     otp_reply = orch.process_channel_payload(
         "web",
         {
@@ -445,7 +462,12 @@ def test_voice_dob_capture_still_works(orch: ChannelOrchestrator):
         "web", {"application_id": app_id, "access_token": token, "text": "9876543210"}
     )
     orch.process_channel_payload(
-        "web", {"application_id": app_id, "access_token": token, "text": "123456"}
+        "web",
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "text": expand_step(orch.journey.identity, "123456"),
+        },
     )
     orch.journey.record_consent(app_id, token, granted=True, trace_id="voice-dob")
     orch.process_channel_payload(
@@ -572,7 +594,11 @@ def test_language_persists_and_localized_response(orch: ChannelOrchestrator):
     # OTP auth must not couple persona identity to language
     otp_reply = orch.process_channel_payload(
         "web",
-        {"application_id": app_id, "access_token": token, "text": "123456"},
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "text": expand_step(orch.journey.identity, "123456"),
+        },
     )
     assert otp_reply.state == JourneyState.CONSENT.value
     assert orch.journey._get_app_by_ref(app_id).language == "hi"
@@ -611,7 +637,7 @@ def test_voice_language_selection_independent_of_persona(orch: ChannelOrchestrat
             "application_id": app_id,
             "access_token": token,
             "modality": "text",
-            "text": "123456",
+            "text": expand_step(orch.journey.identity, "123456"),
             "language": "kn",
         },
     )
@@ -643,13 +669,171 @@ def test_cross_channel_session_resume(orch: ChannelOrchestrator):
         {
             "application_id": app_id,
             "access_token": resumed.access_token,
-            "text": "123456",
+            "text": expand_step(orch.journey.identity, "123456"),
         },
     )
     assert cont.state == JourneyState.CONSENT.value
 
 
-def test_dtmf_numeric_parsing(orch: ChannelOrchestrator):
+def test_ivr_dtmf_language_menu_and_consent(orch: ChannelOrchestrator):
+    start = orch.start(channel="ivr")
+    token = start.access_token
+    assert token
+    app_id = start.application_id
+    assert "Press 1 for English" in (start.prompt or "")
+    assert "Press 2 for Hindi" in (start.prompt or "")
+    assert "Press 3 for Kannada" in (start.prompt or "")
+
+    hi = orch.process_channel_payload(
+        "ivr", {"application_id": app_id, "access_token": token, "dtmf": "2"}
+    )
+    assert hi.state == JourneyState.AUTHENTICATE.value
+    assert orch.journey._get_app_by_ref(app_id).language == "hi"
+
+    start_en = orch.start(channel="ivr")
+    token_en = start_en.access_token
+    assert token_en
+    app_en = start_en.application_id
+    bad = orch.process_channel_payload(
+        "ivr", {"application_id": app_en, "access_token": token_en, "dtmf": "9"}
+    )
+    assert bad.error == "invalid_language"
+    assert bad.state == JourneyState.LANGUAGE_SELECT.value
+    ok = orch.process_channel_payload(
+        "ivr", {"application_id": app_en, "access_token": token_en, "dtmf": "1"}
+    )
+    assert ok.state == JourneyState.AUTHENTICATE.value
+    assert orch.journey._get_app_by_ref(app_en).language == "en"
+    assert ok.data.get("auth_step") == "mobile"
+    assert "keypad" in (ok.prompt or "").lower()
+    assert "say" not in (ok.prompt or "").lower()
+
+    mobile = orch.process_channel_payload(
+        "ivr",
+        {"application_id": app_en, "access_token": token_en, "dtmf": "9876543210"},
+    )
+    assert mobile.data.get("auth_step") == "otp"
+    assert "keypad" in (mobile.prompt or "").lower()
+    otp = current_otp(orch.journey.identity)  # type: ignore[arg-type]
+    auth = orch.process_channel_payload(
+        "ivr",
+        {"application_id": app_en, "access_token": token_en, "dtmf": otp},
+    )
+    assert auth.state == JourneyState.CONSENT.value
+    consented = orch.process_channel_payload(
+        "ivr",
+        {"application_id": app_en, "access_token": token_en, "dtmf": "1"},
+    )
+    assert consented.state == JourneyState.SERVICE_SELECT.value
+    service = orch.process_channel_payload(
+        "ivr",
+        {"application_id": app_en, "access_token": token_en, "dtmf": "1"},
+    )
+    assert service.state == JourneyState.FORM_CAPTURE.value
+
+
+def test_ivr_dtmf_registration_choice(orch: ChannelOrchestrator):
+    start = orch.start(channel="ivr")
+    token = start.access_token
+    assert token
+    app_id = start.application_id
+    orch.process_channel_payload(
+        "ivr", {"application_id": app_id, "access_token": token, "dtmf": "1"}
+    )
+    offer = orch.process_channel_payload(
+        "ivr",
+        {"application_id": app_id, "access_token": token, "dtmf": "7012987654"},
+    )
+    assert offer.data.get("auth_step") == "register_offer"
+    assert "Press 1 to register" in (offer.prompt or "")
+    assert "Press 2 to cancel" in (offer.prompt or "")
+    retry = orch.process_channel_payload(
+        "ivr", {"application_id": app_id, "access_token": token, "dtmf": "9"}
+    )
+    assert retry.data.get("auth_step") == "register_offer"
+    assert "Press 1 to register" in (retry.prompt or "")
+    issued = orch.process_channel_payload(
+        "ivr", {"application_id": app_id, "access_token": token, "dtmf": "1"}
+    )
+    assert issued.data.get("auth_step") == "otp"
+    assert issued.data.get("otp_issued") is True
+    assert "keypad" in (issued.prompt or "").lower()
+    otp = current_otp(orch.journey.identity, "7012987654")  # type: ignore[arg-type]
+    named = orch.process_channel_payload(
+        "ivr",
+        {"application_id": app_id, "access_token": token, "dtmf": otp},
+    )
+    assert named.data.get("auth_step") == "register_name"
+    pending = orch.process_channel_payload(
+        "ivr",
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "transcript": "New Citizen",
+        },
+    )
+    assert pending.state == JourneyState.FIELD_CONFIRMATION.value
+    assert "Press 1" in (pending.prompt or "")
+    assert "Press 2" in (pending.prompt or "")
+    assert "Press #" not in (pending.prompt or "")
+    assert "Press *" not in (pending.prompt or "")
+    # Spoken conversational prefix is stripped before confirmation / storage.
+    prefix_pending = orch.process_channel_payload(
+        "ivr", {"application_id": app_id, "access_token": token, "dtmf": "2"}
+    )
+    assert prefix_pending.data.get("auth_step") == "register_name"
+    prefix_confirm = orch.process_channel_payload(
+        "ivr",
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "transcript": "My name is New Citizen",
+        },
+    )
+    assert prefix_confirm.state == JourneyState.FIELD_CONFIRMATION.value
+    assert prefix_confirm.data.get("proposed_value") == "New Citizen"
+    assert "My name is" not in (prefix_confirm.prompt or "")
+    # Retry with 2
+    retry = orch.process_channel_payload(
+        "ivr", {"application_id": app_id, "access_token": token, "dtmf": "2"}
+    )
+    assert retry.state == JourneyState.AUTHENTICATE.value
+    assert retry.data.get("auth_step") == "register_name"
+    pending2 = orch.process_channel_payload(
+        "ivr",
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "transcript": "New Citizen",
+        },
+    )
+    assert pending2.state == JourneyState.FIELD_CONFIRMATION.value
+    assert "New Citizen" in (pending2.prompt or "")
+    assert "Press 1" in (pending2.prompt or "")
+    done = orch.process_channel_payload(
+        "ivr", {"application_id": app_id, "access_token": token, "dtmf": "1"}
+    )
+    assert done.state == JourneyState.CONSENT.value
+    assert "Press 1" in (done.prompt or "")
+    assert "Press 2" in (done.prompt or "")
+
+    # Decline registration → another mobile (DTMF 2)
+    start2 = orch.start(channel="ivr")
+    token2 = start2.access_token
+    assert token2
+    app2 = start2.application_id
+    orch.process_channel_payload(
+        "ivr", {"application_id": app2, "access_token": token2, "dtmf": "1"}
+    )
+    orch.process_channel_payload(
+        "ivr",
+        {"application_id": app2, "access_token": token2, "dtmf": "7012987655"},
+    )
+    again = orch.process_channel_payload(
+        "ivr", {"application_id": app2, "access_token": token2, "dtmf": "2"}
+    )
+    assert again.data.get("auth_step") == "mobile"
+
     start = orch.start(channel="ivr")
     token = start.access_token
     assert token
@@ -662,7 +846,12 @@ def test_dtmf_numeric_parsing(orch: ChannelOrchestrator):
         "ivr", {"application_id": app_id, "access_token": token, "text": "9876543210"}
     )
     orch.process_channel_payload(
-        "ivr", {"application_id": app_id, "access_token": token, "text": "123456"}
+        "ivr",
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "text": expand_step(orch.journey.identity, "123456"),
+        },
     )
     orch.journey.record_consent(app_id, token, granted=True, trace_id="d")
     orch.process_channel_payload(
@@ -721,7 +910,7 @@ async def test_p2_journey_auth_consent_docs_submit_still_work(
     j = orch.journey
     j.handle_message(app_id, token, "en", trace_id="p2")
     j.handle_message(app_id, token, "9876543210", trace_id="p2")
-    j.handle_message(app_id, token, "123456", trace_id="p2")
+    j.handle_message(app_id, token, expand_step(j.identity, "123456"), trace_id="p2")
     j.record_consent(app_id, token, granted=True, trace_id="p2")
     j.handle_message(app_id, token, "INCOME_CERTIFICATE", trace_id="p2")
     for val in [
@@ -970,7 +1159,11 @@ def test_whatsapp_full_auth_path(orch: ChannelOrchestrator):
     )
     ok = orch.process_channel_payload(
         "whatsapp",
-        {"application_id": app_id, "access_token": token, "text": "123456"},
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "text": expand_step(orch.journey.identity, "123456"),
+        },
     )
     assert ok.state == JourneyState.CONSENT.value
 

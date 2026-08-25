@@ -2,25 +2,25 @@ import { Link } from "react-router-dom";
 
 const SURFACES = [
   {
-    title: "Citizen",
-    blurb: "Voice and text certificate applications with guided steps, documents, and payment.",
+    title: "Citizen application",
+    blurb: "Start or continue a guided certificate application by voice or text.",
     status: "Available",
     to: "/journey",
     cta: "Open Apply",
   },
   {
-    title: "Channel Simulators",
-    blurb: "WhatsApp + IVR demonstration simulators that use the same service journey.",
+    title: "WhatsApp simulator",
+    blurb: "The same application in a chat-style demonstration.",
     status: "Available",
     to: "/whatsapp",
-    cta: "Open WhatsApp simulator",
+    cta: "Open WhatsApp",
   },
   {
-    title: "Officer",
-    blurb: "Review applications, approve and issue, request corrections, reject, or escalate.",
+    title: "Officer portal",
+    blurb: "Review applications, issue certificates, request corrections, or reject.",
     status: "Available",
     to: "/officer",
-    cta: "Open Officer review",
+    cta: "Open Officer portal",
   },
 ];
 
@@ -38,14 +38,14 @@ export default function PlaceholdersPage() {
             <p>{surface.blurb}</p>
             <span className="chip">{surface.status}</span>
             <Link className="surface-link" to={surface.to}>
-              {surface.cta} →
+              {surface.cta}
             </Link>
           </article>
         ))}
       </div>
       <p className="muted" style={{ marginTop: "1.25rem" }}>
-        Also available:{" "}
-        <Link to="/ivr">IVR Simulator</Link> for telephone-style keypad and speech practice.
+        Also available: <Link to="/ivr">IVR simulator</Link> for telephone-style keypad and
+        speech practice.
       </p>
     </section>
   );

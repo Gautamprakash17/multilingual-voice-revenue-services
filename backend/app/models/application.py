@@ -56,6 +56,7 @@ class Application(Base):
     correction_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     auth_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     pending_mobile: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    auth_step: Mapped[str | None] = mapped_column(String(32), nullable=True)
     fee_amount_paise: Mapped[int | None] = mapped_column(Integer, nullable=True)
     fee_currency: Mapped[str] = mapped_column(String(8), nullable=False, default="INR")
     payment_completed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

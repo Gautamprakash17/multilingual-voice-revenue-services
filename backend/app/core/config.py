@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = "INFO"
 
+    # Local mock OTP (not a real SMS provider)
+    otp_ttl_seconds: int = Field(default=300, description="OTP challenge lifetime in seconds")
+    otp_max_attempts: int = Field(default=3, description="Failed OTP attempts before reissue")
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

@@ -109,11 +109,14 @@ Identity OTP, payment, OCR/verification, WhatsApp, IVR, and optional cloud AI ar
 
 Python 3.12+, Node.js 20+, Docker + Docker Compose.
 
-### Docker (recommended for judges)
+### Docker (recommended for judges / demos)
+
+Baked production-style images (nginx frontend, no bind mounts):
 
 ```bash
 cp .env.example .env
 docker compose up --build -d
+# or: ./scripts/dev prod-up
 curl -s http://localhost:8080/api/v1/health
 curl -s http://localhost:8080/api/v1/ready
 ```
@@ -131,6 +134,26 @@ curl -s http://localhost:8080/api/v1/ready
 Default officer token: `officer-poc-token`.
 Demo persona: mobile `9876543210`, OTP `123456` (Lakshmi Devi).
 
+### Local development (hot reload)
+
+Same ports as the demo stack. Postgres stays in Docker; backend uses uvicorn `--reload`; frontend uses Vite HMR:
+
+```bash
+cp .env.example .env
+chmod +x scripts/dev
+./scripts/dev up --build          # first time / after Dockerfile or dependency changes
+./scripts/dev up                  # day-to-day
+./scripts/dev logs                # backend + frontend
+./scripts/dev restart backend     # only if needed
+./scripts/dev restart frontend
+./scripts/dev rebuild frontend    # after package.json / lockfile changes
+./scripts/dev down
+```
+
+Equivalent compose: `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d`
+
+Edit frontend or backend source → changes apply without rebuilding images. Use `./scripts/dev prod-up` only for the baked demo stack; use `./scripts/dev rebuild` when Dockerfiles or Python/Node dependencies change.
+
 ### Backend (without Docker)
 
 ```bash
@@ -142,12 +165,15 @@ alembic upgrade head
 uvicorn app.main:app --reload --port 8000
 ```
 
-### Frontend
+Requires a reachable Postgres (`DATABASE_URL` in `.env`). With the compose Postgres service only on the internal network, prefer `./scripts/dev up` or temporarily publish `5432`.
+
+### Frontend (without Docker)
 
 ```bash
 cd frontend && npm install && npm run dev
 ```
 
+Defaults to http://localhost:5173 (Vite). Set `VITE_API_BASE_URL=http://localhost:8080` if the API is the compose backend on 8080.
 ## Demo flow
 
 Follow the timed judge script: **[docs/DEMO_RUNBOOK.md](docs/DEMO_RUNBOOK.md)** (~8–10 minutes).

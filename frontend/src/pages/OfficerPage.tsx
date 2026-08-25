@@ -1,44 +1,61 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   fetchOfficerApplication,
+  fetchOfficerCertificate,
   fetchOfficerHistory,
   fetchOfficerQueue,
+  fetchServices,
   officerAction,
   type OfficerApplication,
   type OfficerHistoryItem,
+  type ServiceConfig,
 } from "../api/client";
 import {
+  certificateDemoDisclaimer,
+  certificateIssuedTitle,
+  certificateReadyCopy,
+  issuedCertificateErrorMessage,
+  issuedCertificateHeading,
+  issuedCertificateLoadingMessage,
+  issuedCertificateMissingMessage,
+  issuedCertificateUiState,
+  isIssuedCertificateDoc,
+} from "../officer/certificate";
+import {
   formatOfficerActionAt,
+  formatOfficerChannel,
+  officerApplicantSummary,
   officerHistoryEmptyMessage,
   officerQueueEmptyMessage,
+  officerStatusCounts,
   type OfficerListMode,
 } from "../officer/labels";
+import {
+  documentLabel,
+  fieldLabel,
+  processingStatusBadgeClass,
+  processingStatusLabel,
+  serviceDisplayName,
+  statusLifecycleSteps,
+  verificationStatusLabel,
+} from "../journey/labels";
 
 const DEFAULT_TOKEN = "officer-poc-token";
-
-function statusBadgeClass(status: string): string {
-  const s = status.toUpperCase();
-  if (s === "ISSUED" || s === "APPROVED") return "badge badge-success";
-  if (s === "REJECTED") return "badge badge-error";
-  if (s === "NEEDS_CORRECTION" || s.includes("ESCALAT")) return "badge badge-warning";
-  return "badge badge-info";
-}
-
-function serviceName(code: string): string {
-  return code.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
 
 export default function OfficerPage() {
   const [token, setToken] = useState(DEFAULT_TOKEN);
   const [mode, setMode] = useState<OfficerListMode>("applications");
   const [queue, setQueue] = useState<OfficerApplication[]>([]);
   const [history, setHistory] = useState<OfficerHistoryItem[]>([]);
+  const [services, setServices] = useState<ServiceConfig[]>([]);
   const [selected, setSelected] = useState<OfficerApplication | null>(null);
   const [notes, setNotes] = useState("Please correct annual income");
   const [targetField, setTargetField] = useState("annual_income");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [listLoading, setListLoading] = useState(false);
+  const [certBusy, setCertBusy] = useState(false);
+  const [certError, setCertError] = useState<string | null>(null);
 
   const refreshQueue = useCallback(async () => {
     setListLoading(true);
@@ -73,18 +90,23 @@ export default function OfficerPage() {
   async function refresh() {
     setBusy(true);
     try {
-      if (mode === "history") {
-        await refreshHistory();
-      } else {
-        await refreshQueue();
-      }
+      const catalog = await fetchServices().catch(() => ({ services: [] as ServiceConfig[] }));
+      setServices(catalog.services || []);
+      await Promise.all([refreshQueue(), refreshHistory()]);
     } finally {
       setBusy(false);
     }
   }
 
+  useEffect(() => {
+    void refresh();
+    // Load once when the officer token is available.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
   async function selectHistoryItem(item: OfficerHistoryItem) {
     setBusy(true);
+    setCertError(null);
     setError(null);
     try {
       const detail = await fetchOfficerApplication(token, item.application_id);
@@ -144,6 +166,7 @@ export default function OfficerPage() {
     }
   }
 
+  const counts = officerStatusCounts(queue, history);
   const queueEmpty = officerQueueEmptyMessage(queue.length, listLoading && mode === "applications");
   const historyEmpty = officerHistoryEmptyMessage(
     history.length,
@@ -158,18 +181,78 @@ export default function OfficerPage() {
     ? history.find((h) => h.application_id === selected.application_id)
     : undefined;
 
+  const certState = issuedCertificateUiState({
+    processingStatus: selected?.processing_status,
+    certificate: selected?.issued_certificate,
+    loading: certBusy,
+    error: certError,
+  });
+
+  async function openCertificate(download: boolean) {
+    if (!selected) return;
+    setCertBusy(true);
+    setCertError(null);
+    try {
+      const blob = await fetchOfficerCertificate(token, selected.application_id, {
+        download,
+      });
+      const url = URL.createObjectURL(blob);
+      const filename =
+        selected.issued_certificate?.filename ||
+        `income-certificate-${selected.application_id}.pdf`;
+      if (download) {
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        a.click();
+      } else {
+        window.open(url, "_blank", "noopener,noreferrer");
+      }
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err) {
+      setCertError(err instanceof Error ? err.message : issuedCertificateErrorMessage());
+    } finally {
+      setCertBusy(false);
+    }
+  }
+
   return (
-    <section className="panel">
-      <h1>Officer review</h1>
+    <section className="panel officer-portal">
+      <p className="eyebrow">Operations</p>
+      <h1>Officer Portal</h1>
       <p className="lede">
         Review submitted applications. Approve and issue, request corrections, reject, or
-        escalate. Completed actions stay in History.
+        escalate. Completed work stays in History.
       </p>
 
-      <div className="section-card">
+      <div className="metric-grid" aria-label="Application summary">
+        <article className="metric-card">
+          <span>Pending</span>
+          <strong>{counts.pending}</strong>
+        </article>
+        <article className="metric-card">
+          <span>Under review</span>
+          <strong>{counts.underReview}</strong>
+        </article>
+        <article className="metric-card">
+          <span>Needs correction</span>
+          <strong>{counts.needsCorrection}</strong>
+        </article>
+        <article className="metric-card">
+          <span>Issued</span>
+          <strong>{counts.issued}</strong>
+        </article>
+        <article className="metric-card">
+          <span>Rejected</span>
+          <strong>{counts.rejected}</strong>
+        </article>
+      </div>
+
+      <details className="section-card officer-access">
+        <summary>Officer access</summary>
         <div className="row gap">
           <label htmlFor="officer-token">
-            Officer access token
+            Access token
             <input
               id="officer-token"
               value={token}
@@ -182,10 +265,10 @@ export default function OfficerPage() {
             </span>
           </label>
           <button type="button" onClick={() => void refresh()} disabled={busy}>
-            {mode === "history" ? "Refresh history" : "Refresh queue"}
+            Refresh
           </button>
         </div>
-      </div>
+      </details>
 
       {error && (
         <div className="alert error" role="alert">
@@ -193,6 +276,7 @@ export default function OfficerPage() {
         </div>
       )}
 
+      <div className="officer-tabs-row">
       <div className="officer-tabs" role="tablist" aria-label="Officer lists">
         <button
           type="button"
@@ -215,11 +299,24 @@ export default function OfficerPage() {
           History
         </button>
       </div>
+      <button type="button" className="ghost" onClick={() => void refresh()} disabled={busy}>
+        Refresh
+      </button>
+      </div>
 
       <div className="grid two">
         <div className="section-card">
           <h2>{mode === "history" ? "History" : "Applications queue"}</h2>
           {mode === "applications" && (
+            <div className="queue-table-wrap">
+              <div className="queue-table-head" aria-hidden="true">
+                <span>Application ID</span>
+                <span>Service</span>
+                <span>Applicant</span>
+                <span>Status</span>
+                <span>Channel</span>
+                <span>Updated</span>
+              </div>
             <ul className="queue-list">
               {queue.map((item) => (
                 <li key={item.application_id}>
@@ -230,25 +327,31 @@ export default function OfficerPage() {
                         ? "active queue-row"
                         : "queue-row"
                     }
-                    onClick={() => setSelected(item)}
+                    onClick={() => {
+                      setCertError(null);
+                      setSelected(item);
+                    }}
                     aria-pressed={selected?.application_id === item.application_id}
                   >
-                    <span>{item.application_id}</span>
-                    <span className={statusBadgeClass(item.processing_status)}>
-                      {item.processing_status}
+                    <span className="queue-id">{item.application_id}</span>
+                    <span>{serviceDisplayName(item.service_code, services)}</span>
+                    <span>{officerApplicantSummary(item.fields_present)}</span>
+                    <span>
+                      <span className={processingStatusBadgeClass(item.processing_status)}>
+                        {processingStatusLabel(item.processing_status)}
+                      </span>
+                      {item.escalated ? (
+                        <span className="badge badge-warning">Escalated</span>
+                      ) : null}
                     </span>
-                    {item.escalated ? (
-                      <span className="badge badge-warning">Escalated</span>
-                    ) : null}
-                    <span className="queue-row-meta">
-                      {serviceName(item.service_code)}
-                      {item.created_at ? ` · ${formatOfficerActionAt(item.created_at)}` : ""}
-                    </span>
+                    <span>{formatOfficerChannel(item.channel)}</span>
+                    <span>{item.created_at ? formatOfficerActionAt(item.created_at) : "—"}</span>
                   </button>
                 </li>
               ))}
-              {queueEmpty && <li className="muted">{queueEmpty}</li>}
+              {queueEmpty && <li className="muted empty-copy">{queueEmpty}</li>}
             </ul>
+            </div>
           )}
           {mode === "history" && (
             <ul className="queue-list history-list">
@@ -266,8 +369,8 @@ export default function OfficerPage() {
                   >
                     <span className="history-id">{item.application_id}</span>
                     <span className="history-service">{item.service_display_name}</span>
-                    <span className={statusBadgeClass(item.processing_status)}>
-                      {item.processing_status}
+                    <span className={processingStatusBadgeClass(item.processing_status)}>
+                      {processingStatusLabel(item.processing_status)}
                     </span>
                     <span className="history-action">{item.last_action_label}</span>
                     <span className="history-time muted">
@@ -276,54 +379,92 @@ export default function OfficerPage() {
                   </button>
                 </li>
               ))}
-              {historyEmpty && <li className="muted">{historyEmpty}</li>}
+              {historyEmpty && <li className="muted empty-copy">{historyEmpty}</li>}
             </ul>
           )}
         </div>
 
-        <div className="section-card">
+        <div className="section-card officer-detail-panel">
           <h2>Application detail</h2>
           {!selected && (
-            <p className="muted">
-              {mode === "history"
-                ? "Select an application from History."
-                : "Select an application from the queue."}
-            </p>
+            <div className="officer-detail-empty" role="status">
+              <span className="empty-state-icon" aria-hidden="true">
+                ◫
+              </span>
+              <p className="conversation-empty-title">No application selected</p>
+              <p className="muted">
+                {mode === "history"
+                  ? "Choose an application from History to view details and the issued certificate."
+                  : "Choose an application from the queue to view applicant details, documents and available actions."}
+              </p>
+            </div>
           )}
           {selected && (
             <div className="officer-detail-sections">
-              <section className="officer-section">
-                <h3>Application summary</h3>
-                <dl className="officer-dl">
-                  <dt>Application ID</dt>
-                  <dd>{selected.application_id}</dd>
-                  <dt>Service</dt>
-                  <dd>{serviceName(selected.service_code)}</dd>
-                  <dt>Processing status</dt>
-                  <dd>
-                    <span className={statusBadgeClass(selected.processing_status)}>
-                      {selected.processing_status}
-                    </span>
-                  </dd>
-                  <dt>Journey state</dt>
-                  <dd>
-                    <span className="badge">{selected.journey_state}</span>
-                  </dd>
-                  <dt>Language</dt>
-                  <dd>{selected.language || "—"}</dd>
-                  <dt>Escalated</dt>
-                  <dd>{selected.escalated ? "Yes" : "No"}</dd>
+              <header className="officer-detail-hero">
+                <div className="officer-detail-hero-main">
+                  <span className="label">Application ID</span>
+                  <strong className="app-ref">{selected.application_id}</strong>
+                  <span
+                    className={`${processingStatusBadgeClass(selected.processing_status)} officer-status-badge`}
+                  >
+                    {processingStatusLabel(selected.processing_status)}
+                  </span>
+                  {selected.escalated ? (
+                    <span className="badge badge-warning">Escalated</span>
+                  ) : null}
+                </div>
+                <dl className="officer-detail-hero-grid">
+                  <div>
+                    <dt>Service</dt>
+                    <dd>{serviceDisplayName(selected.service_code, services)}</dd>
+                  </div>
+                  <div>
+                    <dt>Applicant</dt>
+                    <dd>{officerApplicantSummary(selected.fields_present)}</dd>
+                  </div>
+                  <div>
+                    <dt>Channel</dt>
+                    <dd>{formatOfficerChannel(selected.channel)}</dd>
+                  </div>
+                  <div>
+                    <dt>Updated</dt>
+                    <dd>
+                      {historyMatch?.action_at
+                        ? formatOfficerActionAt(historyMatch.action_at)
+                        : selected.created_at
+                          ? formatOfficerActionAt(selected.created_at)
+                          : "—"}
+                    </dd>
+                  </div>
                 </dl>
-              </section>
+                {(() => {
+                  const track = statusLifecycleSteps(selected.processing_status);
+                  return track.length > 0 ? (
+                    <ol className="status-track status-track-v" aria-label="Application status">
+                      {track.map((step) => (
+                        <li
+                          key={step.id}
+                          className={`status-track-step ${step.phase} status-${step.id.toLowerCase()}`}
+                          data-status={step.id}
+                        >
+                          <span className="status-track-marker" aria-hidden="true" />
+                          <span>{step.label}</span>
+                        </li>
+                      ))}
+                    </ol>
+                  ) : null;
+                })()}
+              </header>
 
               <section className="officer-section">
-                <h3>Form information</h3>
+                <h3>Applicant details</h3>
                 {selected.fields_present.length === 0 ? (
                   <p className="muted">No form fields recorded.</p>
                 ) : (
                   <ul>
                     {selected.fields_present.map((field) => (
-                      <li key={field}>{field.replace(/_/g, " ")}</li>
+                      <li key={field}>{fieldLabel(field)}</li>
                     ))}
                   </ul>
                 )}
@@ -336,22 +477,81 @@ export default function OfficerPage() {
 
               <section className="officer-section">
                 <h3>Documents</h3>
-                {selected.documents.length === 0 ? (
+                {selected.documents.filter((doc) => !isIssuedCertificateDoc(doc.code)).length ===
+                0 ? (
                   <p className="muted">No documents on file.</p>
                 ) : (
                   <ul>
-                    {selected.documents.map((doc) => (
+                    {selected.documents
+                      .filter((doc) => !isIssuedCertificateDoc(doc.code))
+                      .map((doc) => (
                       <li key={String(doc.code)}>
-                        <strong>{String(doc.code).replace(/_/g, " ")}</strong>
+                        <strong>{documentLabel(String(doc.code))}</strong>
                         {doc.verification_status
-                          ? ` — ${String(doc.verification_status)}`
+                          ? ` — ${verificationStatusLabel(String(doc.verification_status))}`
                           : ""}
-                        {doc.mime_type ? ` · ${String(doc.mime_type)}` : ""}
                       </li>
                     ))}
                   </ul>
                 )}
               </section>
+
+              {certState !== "hidden" && (
+                <section className="officer-section issued-certificate issued-certificate-prominent" aria-label="Issued certificate">
+                  <h3>✓ {issuedCertificateHeading()}</h3>
+                  <p className="certificate-kicker">{certificateIssuedTitle()}</p>
+                  <p>
+                    {certificateReadyCopy(serviceDisplayName(selected.service_code, services))}
+                  </p>
+                  <p className="demo-badge">{certificateDemoDisclaimer()}</p>
+                  <dl className="officer-dl">
+                    <dt>Application ID</dt>
+                    <dd>{selected.application_id}</dd>
+                    <dt>Status</dt>
+                    <dd>
+                      <span className={processingStatusBadgeClass(selected.processing_status)}>
+                        {processingStatusLabel(selected.processing_status)}
+                      </span>
+                    </dd>
+                    <dt>Issue date</dt>
+                    <dd>
+                      {formatOfficerActionAt(selected.issued_certificate?.issued_at || null)}
+                    </dd>
+                  </dl>
+                  {certState === "loading" && (
+                    <p className="muted">{issuedCertificateLoadingMessage()}</p>
+                  )}
+                  {certState === "missing" && (
+                    <p className="muted" role="status">
+                      {issuedCertificateMissingMessage()}
+                    </p>
+                  )}
+                  {certState === "error" && (
+                    <p className="alert error" role="alert">
+                      {certError || issuedCertificateErrorMessage()}
+                    </p>
+                  )}
+                  {certState === "ready" && (
+                    <div className="officer-actions">
+                      <button
+                        type="button"
+                        className="ghost"
+                        disabled={certBusy}
+                        onClick={() => void openCertificate(false)}
+                      >
+                        View PDF
+                      </button>
+                      <button
+                        type="button"
+                        disabled={certBusy}
+                        onClick={() => void openCertificate(true)}
+                      >
+                        Download PDF
+                      </button>
+                    </div>
+                  )}
+                </section>
+              )}
 
               <section className="officer-section">
                 <h3>Payment</h3>
@@ -380,7 +580,8 @@ export default function OfficerPage() {
               )}
 
               {showActions && (
-                <>
+                <section className="officer-section officer-actions-panel">
+                  <h3>Available actions</h3>
                   <label htmlFor="officer-notes">
                     Notes / reason
                     <input
@@ -395,9 +596,13 @@ export default function OfficerPage() {
                       id="correction-field"
                       value={targetField}
                       onChange={(e) => setTargetField(e.target.value)}
+                      aria-describedby="correction-field-hint"
                     />
+                    <span id="correction-field-hint" className="field-hint">
+                      Internal field key for the correction API · {fieldLabel(targetField)}
+                    </span>
                   </label>
-                  <div className="officer-actions">
+                  <div className="officer-actions officer-actions-primary">
                     <button
                       type="button"
                       className="btn-success"
@@ -408,7 +613,7 @@ export default function OfficerPage() {
                     </button>
                     <button
                       type="button"
-                      className="ghost"
+                      className="ghost btn-correction"
                       disabled={busy}
                       onClick={() => void act("request-correction")}
                     >
@@ -431,7 +636,7 @@ export default function OfficerPage() {
                       Escalate
                     </button>
                   </div>
-                </>
+                </section>
               )}
 
               {mode === "history" && (

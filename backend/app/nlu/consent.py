@@ -74,3 +74,35 @@ def parse_field_confirmation_response(text: str) -> bool | None:
     if _FIELD_CONFIRM_YES.match(raw):
         return True
     return parse_consent_response(raw)
+
+
+_REGISTER_EXPLICIT = re.compile(
+    r"register|sign\s*up|create\s*account|पंजीकरण|रजिस्टर|ನೋಂದಣಿ",
+    re.I,
+)
+_ANOTHER_NUMBER = re.compile(
+    r"another\s+number|use\s+another|different\s+number|दूसरा|अन्य नंबर|ಬೇರೆ\s*ಸಂಖ್ಯೆ",
+    re.I,
+)
+
+
+def parse_registration_choice(text: str) -> str | None:
+    """Return 'register', 'another', or None if the utterance is unclear."""
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    token = raw.upper().replace(" ", "")
+    if token in {"REGISTER", "YES", "Y"}:
+        return "register"
+    if token in {"ANOTHER", "NO", "N"}:
+        return "another"
+    if _ANOTHER_NUMBER.search(raw):
+        return "another"
+    if _REGISTER_EXPLICIT.search(raw):
+        return "register"
+    decision = parse_consent_response(raw)
+    if decision is True:
+        return "register"
+    if decision is False:
+        return "another"
+    return None

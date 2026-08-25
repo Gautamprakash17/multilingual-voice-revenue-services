@@ -7,8 +7,11 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import yaml
+
+from app.adapters.otp import DemoSms, OtpChallenge, OtpChallengeStore, generate_otp_code
 
 
 @dataclass(frozen=True)
@@ -16,13 +19,13 @@ class Persona:
     id: str
     name: str
     mobile: str
-    otp: str
 
 
 @dataclass
 class AuthChallenge:
-    persona_id: str
+    persona_id: str | None
     mobile: str
+    challenge_id: str
     # OTP is never returned to callers of public APIs / never logged
 
 
@@ -31,6 +34,7 @@ class AuthResult:
     success: bool
     persona: Persona | None = None
     reason: str | None = None
+    reissued: bool = False
 
 
 class IdentityProvider(ABC):
@@ -38,35 +42,92 @@ class IdentityProvider(ABC):
     def find_by_mobile(self, mobile: str) -> Persona | None: ...
 
     @abstractmethod
-    def request_otp(self, mobile: str) -> AuthChallenge | None:
-        """Start mock OTP challenge. Returns None if persona unknown."""
+    def request_otp(self, mobile: str) -> AuthChallenge:
+        """Start a dynamic OTP challenge for any valid mobile (existing or new)."""
 
     @abstractmethod
     def verify_otp(self, mobile: str, otp: str) -> AuthResult: ...
 
+    @abstractmethod
+    def register_citizen(self, *, name: str, mobile: str) -> Persona: ...
+
+    @abstractmethod
+    def get_demo_sms(self, mobile: str) -> DemoSms | None: ...
+
+    @abstractmethod
+    def clear_demo_sms(self, mobile: str) -> None: ...
+
 
 class MockIdentityProvider(IdentityProvider):
-    """Seeded synthetic personas only — never real citizens."""
+    """Seeded synthetic personas plus locally registered demo citizens."""
 
-    def __init__(self, personas: list[Persona]) -> None:
-        self._by_mobile = {p.mobile: p for p in personas}
+    def __init__(
+        self,
+        personas: list[Persona],
+        *,
+        otp_ttl_seconds: int = 300,
+        otp_max_attempts: int = 3,
+        now=None,
+        generate_otp=generate_otp_code,
+    ) -> None:
+        self._by_mobile = {_normalize_mobile(p.mobile): p for p in personas}
+        self._otp = OtpChallengeStore(
+            ttl_seconds=otp_ttl_seconds,
+            max_attempts=otp_max_attempts,
+            now=now,
+            generate=generate_otp,
+        )
 
     def find_by_mobile(self, mobile: str) -> Persona | None:
         return self._by_mobile.get(_normalize_mobile(mobile))
 
-    def request_otp(self, mobile: str) -> AuthChallenge | None:
-        persona = self.find_by_mobile(mobile)
-        if not persona:
-            return None
-        return AuthChallenge(persona_id=persona.id, mobile=persona.mobile)
+    def merge_personas(self, extra: list[Persona]) -> None:
+        for persona in extra:
+            self._by_mobile[_normalize_mobile(persona.mobile)] = persona
+
+    def request_otp(self, mobile: str) -> AuthChallenge:
+        compact = _normalize_mobile(mobile)
+        persona = self.find_by_mobile(compact)
+        challenge, _sms = self._otp.issue(compact)
+        return AuthChallenge(
+            persona_id=persona.id if persona else None,
+            mobile=compact,
+            challenge_id=challenge.id,
+        )
+
+    def latest_challenge(self, mobile: str) -> OtpChallenge | None:
+        return self._otp._by_mobile.get(_normalize_mobile(mobile))
+
+    def get_demo_sms(self, mobile: str) -> DemoSms | None:
+        return self._otp.peek_sms(_normalize_mobile(mobile))
+
+    def clear_demo_sms(self, mobile: str) -> None:
+        self._otp.clear_sms(_normalize_mobile(mobile))
 
     def verify_otp(self, mobile: str, otp: str) -> AuthResult:
-        persona = self.find_by_mobile(mobile)
+        compact = _normalize_mobile(mobile)
+        outcome = self._otp.verify(compact, (otp or "").strip())
+        if not outcome.success:
+            return AuthResult(success=False, reason=outcome.reason, reissued=outcome.reissued)
+        persona = self.find_by_mobile(compact)
         if not persona:
-            return AuthResult(success=False, reason="unknown_mobile")
-        if (otp or "").strip() != persona.otp:
-            return AuthResult(success=False, reason="invalid_otp")
+            # OTP proved the number; registration name still required.
+            return AuthResult(success=True, persona=None, reason="registration_required")
         return AuthResult(success=True, persona=persona)
+
+    def register_citizen(self, *, name: str, mobile: str) -> Persona:
+        compact = _normalize_mobile(mobile)
+        existing = self.find_by_mobile(compact)
+        if existing:
+            return existing
+        display = (name or "").strip()
+        persona = Persona(
+            id=f"persona-synth-{uuid4().hex[:12]}",
+            name=display,
+            mobile=compact,
+        )
+        self._by_mobile[compact] = persona
+        return persona
 
 
 def _normalize_mobile(mobile: str) -> str:
@@ -93,7 +154,6 @@ def load_personas(path: Path | None = None) -> list[Persona]:
                 id=item["id"],
                 name=item["name"],
                 mobile=str(item["mobile"]),
-                otp=str(item["otp"]),
             )
         )
     return personas
@@ -101,4 +161,11 @@ def load_personas(path: Path | None = None) -> list[Persona]:
 
 @lru_cache
 def get_identity_provider() -> IdentityProvider:
-    return MockIdentityProvider(load_personas())
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    return MockIdentityProvider(
+        load_personas(),
+        otp_ttl_seconds=settings.otp_ttl_seconds,
+        otp_max_attempts=settings.otp_max_attempts,
+    )

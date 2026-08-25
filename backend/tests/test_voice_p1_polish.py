@@ -16,6 +16,8 @@ from app.speech.stt import MockSTTProvider
 from app.speech.tts import MockTTSProvider
 from sqlalchemy.orm import Session
 
+from tests.auth_helpers import expand_step
+
 # Tokens that must never reach a citizen-facing prompt in any language.
 INTERNAL_TOKENS = (
     "YES",
@@ -35,7 +37,7 @@ INTERNAL_TOKENS = (
 @pytest.fixture
 def identity() -> MockIdentityProvider:
     return MockIdentityProvider(
-        [Persona(id="persona-lakshmi", name="Lakshmi Devi", mobile="9876543210", otp="123456")]
+        [Persona(id="persona-lakshmi", name="Lakshmi Devi", mobile="9876543210")]
     )
 
 
@@ -76,7 +78,7 @@ def _to_form_capture(orch: ChannelOrchestrator, language: str) -> tuple[str, str
     app_id, token = start.application_id, start.access_token
     assert token
     for utterance in [language, "9876543210", "123456", "yes", "Income Certificate"]:
-        _voice(orch, app_id, token, utterance, language)
+        _voice(orch, app_id, token, expand_step(orch.journey.identity, utterance), language)
     return app_id, token
 
 
@@ -204,7 +206,7 @@ def test_consent_accepts_the_same_natural_yes(orch: ChannelOrchestrator, utteran
     app_id, token = start.application_id, start.access_token
     assert token
     for step in ["en", "9876543210", "123456"]:
-        _voice(orch, app_id, token, step, "en")
+        _voice(orch, app_id, token, expand_step(orch.journey.identity, step), "en")
 
     granted = _voice(orch, app_id, token, utterance, "en")
     assert granted.state == JourneyState.SERVICE_SELECT.value, utterance
@@ -216,7 +218,7 @@ def test_unclear_consent_is_spoken_and_token_free(orch: ChannelOrchestrator):
     app_id, token = start.application_id, start.access_token
     assert token
     for step in ["en", "9876543210", "123456"]:
-        _voice(orch, app_id, token, step, "en")
+        _voice(orch, app_id, token, expand_step(orch.journey.identity, step), "en")
 
     unclear = _voice(orch, app_id, token, "hmm I am not sure about this", "en")
     assert unclear.error == "consent_unclear"

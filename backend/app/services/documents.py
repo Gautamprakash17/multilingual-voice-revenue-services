@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -18,10 +19,13 @@ from app.adapters.documents import (
 from app.boundary.classification import Classification
 from app.boundary.gateway import DataBoundaryGateway, GatewayRequest
 from app.core.config import get_settings
-from app.models.application import DocumentRecord
+from app.models.application import Application, DocumentRecord
 from app.platform.audit import write_audit_event
 from app.platform.metrics import get_metrics
 from app.services.catalogue import DocumentDef
+
+ISSUED_CERTIFICATE_CODE = "ISSUED_CERTIFICATE"
+_STORAGE_KEY_RE = re.compile(r"^doc_[0-9a-f]{32}$")
 
 
 class DocumentValidationError(ValueError):
@@ -62,9 +66,7 @@ async def store_document(
     selected_type: str | None = None
     if document_def.accepted_types:
         if not document_type or not str(document_type).strip():
-            raise DocumentValidationError(
-                f"Document type is required for {document_def.code}"
-            )
+            raise DocumentValidationError(f"Document type is required for {document_def.code}")
         match = document_def.accepted_type_by_code(str(document_type))
         if match is None:
             allowed = ", ".join(t.code for t in document_def.accepted_types)
@@ -206,3 +208,77 @@ async def store_document(
         storage_key=storage_key,
         verification_outcome=verification.outcome.value,
     )
+
+
+def get_document(db: Session, application_pk: str, document_code: str) -> DocumentRecord | None:
+    return (
+        db.query(DocumentRecord)
+        .filter(
+            DocumentRecord.application_id == application_pk,
+            DocumentRecord.document_code == document_code,
+        )
+        .one_or_none()
+    )
+
+
+def read_stored_bytes(storage_key: str) -> bytes:
+    """Read stored file bytes. Rejects path traversal; never returns the path."""
+    if not _STORAGE_KEY_RE.match(storage_key or ""):
+        raise FileNotFoundError("Document is unavailable")
+    path = documents_root() / storage_key
+    if not path.is_file():
+        raise FileNotFoundError("Document is unavailable")
+    return path.read_bytes()
+
+
+def store_issued_certificate(
+    db: Session,
+    app: Application,
+    pdf_bytes: bytes,
+    *,
+    filename: str,
+) -> DocumentRecord:
+    """Persist the issued certificate PDF. Idempotent for one code per application."""
+    existing = get_document(db, app.id, ISSUED_CERTIFICATE_CODE)
+    if existing:
+        try:
+            stored = read_stored_bytes(existing.storage_key)
+        except FileNotFoundError:
+            stored = b""
+        if stored.startswith(b"%PDF"):
+            return existing
+
+    if not pdf_bytes or not pdf_bytes.startswith(b"%PDF"):
+        raise ValueError("Refusing to store an empty or unreadable certificate PDF")
+
+    storage_key = f"doc_{uuid4().hex}"
+    dest = documents_root() / storage_key
+    dest.write_bytes(pdf_bytes)
+    checksum = hashlib.sha256(pdf_bytes).hexdigest()
+    if existing:
+        existing.storage_key = storage_key
+        existing.original_filename = filename
+        existing.mime_type = "application/pdf"
+        existing.size_bytes = len(pdf_bytes)
+        existing.checksum_sha256 = checksum
+        existing.verification_status = "ISSUED"
+        db.flush()
+        return existing
+
+    record = DocumentRecord(
+        application_id=app.id,
+        document_code=ISSUED_CERTIFICATE_CODE,
+        storage_key=storage_key,
+        original_filename=filename,
+        mime_type="application/pdf",
+        size_bytes=len(pdf_bytes),
+        checksum_sha256=checksum,
+        classification=Classification.RESTRICTED.value,
+        verification_status="ISSUED",
+        verification_reason="Generated issued certificate (POC)",
+        ocr_provider=None,
+        notes="issued_certificate",
+    )
+    db.add(record)
+    db.flush()
+    return record

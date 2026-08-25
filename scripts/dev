@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Local development helpers (Vite HMR + uvicorn --reload via compose override).
+# Production/demo stack is unchanged: docker compose up --build -d
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+COMPOSE=(docker compose -f docker-compose.yml -f docker-compose.dev.yml)
+
+usage() {
+  cat <<'EOF'
+Usage: ./scripts/dev <command> [args]
+
+Commands:
+  up [--build]     Start Postgres + reloadable backend + Vite frontend (ports 8080 / 5174)
+  down             Stop the development stack (keeps Postgres volume)
+  stop             Alias for down
+  restart [svc]    Restart backend, frontend, or all app services
+  rebuild [svc]    Rebuild image(s) and recreate (use when Dockerfile / deps change)
+  logs [svc]       Follow logs (default: backend frontend)
+  ps               Show compose service status
+  prod-up          Start the production-style Docker stack (nginx build, no bind mounts)
+  prod-down        Stop the production-style stack
+
+Examples:
+  ./scripts/dev up --build          # first time / after switching from prod
+  ./scripts/dev up                  # day-to-day start
+  ./scripts/dev restart backend
+  ./scripts/dev rebuild frontend    # after package.json / lockfile changes
+  ./scripts/dev logs backend
+EOF
+}
+
+cmd="${1:-}"
+shift || true
+
+case "$cmd" in
+  up)
+    "${COMPOSE[@]}" up -d --remove-orphans "$@"
+    echo
+    echo "Dev stack ready:"
+    echo "  UI  http://localhost:5174"
+    echo "  API http://localhost:8080"
+    echo "  IVR http://localhost:5174/ivr"
+    ;;
+  down|stop)
+    "${COMPOSE[@]}" down "$@"
+    ;;
+  restart)
+    if [[ $# -eq 0 ]]; then
+      "${COMPOSE[@]}" restart backend frontend
+    else
+      "${COMPOSE[@]}" restart "$@"
+    fi
+    ;;
+  rebuild)
+    if [[ $# -eq 0 ]]; then
+      "${COMPOSE[@]}" up -d --build --force-recreate --remove-orphans
+    else
+      "${COMPOSE[@]}" up -d --build --force-recreate --remove-orphans "$@"
+    fi
+    ;;
+  logs)
+    if [[ $# -eq 0 ]]; then
+      "${COMPOSE[@]}" logs -f backend frontend
+    else
+      "${COMPOSE[@]}" logs -f "$@"
+    fi
+    ;;
+  ps)
+    "${COMPOSE[@]}" ps "$@"
+    ;;
+  prod-up)
+    docker compose -f docker-compose.yml up --build -d "$@"
+    ;;
+  prod-down)
+    docker compose -f docker-compose.yml down "$@"
+    ;;
+  -h|--help|help|"")
+    usage
+    ;;
+  *)
+    echo "Unknown command: $cmd" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

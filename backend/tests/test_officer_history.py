@@ -20,6 +20,8 @@ from fastapi import UploadFile
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from tests.auth_helpers import submit_current_otp
+
 
 @pytest.fixture
 def journey(db_session: Session, gateway: DataBoundaryGateway) -> JourneyService:
@@ -32,7 +34,7 @@ def _auth_to_form(journey: JourneyService, *, trace: str = "hist") -> tuple[str,
     app_id, token = start.application_id, start.access_token
     journey.handle_message(app_id, token, "en", trace_id=trace)
     journey.handle_message(app_id, token, "9876543210", trace_id=trace)
-    journey.handle_message(app_id, token, "123456", trace_id=trace)
+    submit_current_otp(journey, app_id, token, trace=trace)
     journey.record_consent(app_id, token, granted=True, trace_id=trace)
     journey.handle_message(app_id, token, "INCOME_CERTIFICATE", trace_id=trace)
     return app_id, token

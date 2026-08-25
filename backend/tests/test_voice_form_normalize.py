@@ -19,11 +19,13 @@ from app.speech.stt import MockSTTProvider
 from app.speech.tts import MockTTSProvider
 from sqlalchemy.orm import Session
 
+from tests.auth_helpers import expand_step
+
 
 @pytest.fixture
 def identity() -> MockIdentityProvider:
     return MockIdentityProvider(
-        [Persona(id="persona-lakshmi", name="Lakshmi Devi", mobile="9876543210", otp="123456")]
+        [Persona(id="persona-lakshmi", name="Lakshmi Devi", mobile="9876543210")]
     )
 
 
@@ -70,7 +72,7 @@ def _to_field(orch: ChannelOrchestrator, field_index: int = 0) -> tuple[str, str
     app_id, token = start.application_id, start.access_token
     assert token
     for step in ["en", "9876543210", "123456", "yes", "Income Certificate"]:
-        _voice(orch, app_id, token, step)
+        _voice(orch, app_id, token, expand_step(orch.journey.identity, step))
     values = [
         "Lakshmi Devi",
         "12/04/1995",
@@ -208,6 +210,13 @@ def test_normalize_voice_field_input_is_type_driven(orch: ChannelOrchestrator):
         prompt="name",
         validation={"min_length": 2},
     )
+    address_field = FieldDef(
+        name="address",
+        type="string",
+        required=True,
+        prompt="address",
+        validation={"min_length": 2},
+    )
     assert (
         journey._normalize_voice_field_input(date_field, "27, 0 6, 1 9 9 6.")
         == "27/06/1996"
@@ -217,11 +226,81 @@ def test_normalize_voice_field_input_is_type_driven(orch: ChannelOrchestrator):
         journey._normalize_voice_field_input(string_field, "Gotham Bracass.")
         == "Gotham Bracass"
     )
+    assert (
+        journey._normalize_voice_field_input(
+            string_field, "My name is Gotham Bracass"
+        )
+        == "Gotham Bracass"
+    )
+    # Non-name string fields must not strip conversational prefixes.
+    assert (
+        journey._normalize_voice_field_input(
+            address_field, "This is 12 Temple Street"
+        )
+        == "This is 12 Temple Street"
+    )
 
 
 # ---------------------------------------------------------------------------
 # End-to-end voice confirmation
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("spoken", "expected"),
+    [
+        ("My name is Gautam Prakash", "Gautam Prakash"),
+        ("My name's Gautam Prakash", "Gautam Prakash"),
+        ("I am Gautam Prakash", "Gautam Prakash"),
+        ("Gautam Prakash", "Gautam Prakash"),
+    ],
+)
+def test_voice_applicant_name_strips_conversational_prefix(
+    orch: ChannelOrchestrator, spoken: str, expected: str
+):
+    app_id, token = _to_field(orch, field_index=0)
+    pending = _voice(orch, app_id, token, spoken)
+    assert pending.state == JourneyState.FIELD_CONFIRMATION.value
+    assert pending.data.get("proposed_value") == expected
+    assert expected in (pending.message or "")
+    assert "My name is" not in (pending.message or "")
+    assert "My name's" not in (pending.message or "")
+    assert "I am Gautam" not in (pending.message or "")
+
+    saved = _voice(orch, app_id, token, "yes")
+    assert saved.state == JourneyState.FORM_CAPTURE.value
+    app = orch.journey._get_app_by_ref(app_id)
+    assert (app.form_data or {}).get("applicant_name") == expected
+
+
+def test_voice_applicant_name_prefix_only_retries(orch: ChannelOrchestrator):
+    app_id, token = _to_field(orch, field_index=0)
+    bad = _voice(orch, app_id, token, "My name is")
+    assert bad.error == "validation_failed"
+    assert bad.state == JourneyState.FORM_CAPTURE.value
+    assert "applicant_name" not in (orch.journey._get_app_by_ref(app_id).form_data or {})
+
+
+def test_typed_applicant_name_does_not_strip_prefix(orch: ChannelOrchestrator):
+    """Typed form capture stays literal — prefix stripping is voice-only."""
+    start = orch.start(channel="web")
+    app_id, token = start.application_id, start.access_token
+    assert token
+    for step in ["en", "9876543210", "123456", "yes", "Income Certificate"]:
+        orch.journey.handle_message(
+            app_id, token, expand_step(orch.journey.identity, step), trace_id="typed"
+        )
+    reply = orch.journey.handle_message(
+        app_id,
+        token,
+        "My name is Typed Citizen",
+        trace_id="typed",
+        input_modality="text",
+    )
+    assert reply.state == JourneyState.FORM_CAPTURE.value
+    app = orch.journey._get_app_by_ref(app_id)
+    assert (app.form_data or {}).get("applicant_name") == "My name is Typed Citizen"
+
 
 
 @pytest.mark.parametrize(
@@ -314,7 +393,7 @@ def test_voice_dob_works_in_each_language(orch: ChannelOrchestrator, language: s
     assert token
     affirm = {"en": "yes", "hi": "हाँ", "kn": "ಹೌದು"}[language]
     for step in [language, "9876543210", "123456", affirm, "Income Certificate"]:
-        _voice(orch, app_id, token, step, language)
+        _voice(orch, app_id, token, expand_step(orch.journey.identity, step), language)
     _voice(orch, app_id, token, "Lakshmi Devi", language)
     _voice(orch, app_id, token, affirm, language)
     pending = _voice(orch, app_id, token, "27, 0 6, 1 9 9 6", language)

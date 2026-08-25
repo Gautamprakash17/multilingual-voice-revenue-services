@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.services.certificate import CertificateGenerationError
+from app.services.documents import ISSUED_CERTIFICATE_CODE
 from app.services.officer import (
     OfficerActionError,
     OfficerAuthError,
@@ -36,6 +39,8 @@ class OfficerApplicationResponse(BaseModel):
     documents: list[dict] = Field(default_factory=list)
     fields_present: list[str] = Field(default_factory=list)
     created_at: str | None = None
+    channel: str | None = None
+    issued_certificate: dict | None = None
 
 
 class OfficerHistoryItemResponse(BaseModel):
@@ -75,6 +80,8 @@ def _to_resp(view) -> OfficerApplicationResponse:
         documents=view.documents,
         fields_present=view.fields_present,
         created_at=view.created_at,
+        channel=view.channel,
+        issued_certificate=view.issued_certificate,
     )
 
 
@@ -141,9 +148,43 @@ def approve(
         return _to_resp(view)
     except LookupError:
         raise HTTPException(status_code=404, detail="Application not found") from None
+    except CertificateGenerationError:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="Certificate PDF could not be generated. The application was not issued.",
+        ) from None
     except OfficerActionError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@router.get("/{application_id}/documents/{document_code}")
+def download_officer_document(
+    application_id: str,
+    document_code: str,
+    db: Session = Depends(get_db),
+    actor_id: str = Depends(_officer),
+    download: bool = False,
+) -> Response:
+    """Stream an issued certificate. Never returns storage paths."""
+    _ = actor_id
+    if document_code.upper() != ISSUED_CERTIFICATE_CODE:
+        raise HTTPException(status_code=404, detail="Document not found")
+    try:
+        payload, filename = OfficerService(db).get_issued_certificate_bytes(application_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Issued certificate not found") from None
+    disposition = "attachment" if download else "inline"
+    return Response(
+        content=payload,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'{disposition}; filename="{filename}"',
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.post("/{application_id}/reject", response_model=OfficerApplicationResponse)

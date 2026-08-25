@@ -19,6 +19,8 @@ from app.speech.tts import MockTTSProvider
 from fastapi import UploadFile
 from sqlalchemy.orm import Session
 
+from tests.auth_helpers import expand_step
+
 
 @pytest.fixture(autouse=True)
 def _clear_catalogue_cache():
@@ -32,7 +34,7 @@ def _clear_catalogue_cache():
 @pytest.fixture
 def identity() -> MockIdentityProvider:
     return MockIdentityProvider(
-        [Persona(id="persona-lakshmi", name="Lakshmi Devi", mobile="9876543210", otp="123456")]
+        [Persona(id="persona-lakshmi", name="Lakshmi Devi", mobile="9876543210")]
     )
 
 
@@ -104,7 +106,7 @@ async def test_upload_requires_accepted_document_type(
     app_id, token = start.application_id, start.access_token
     assert token
     for step in ["en", "9876543210", "123456"]:
-        journey.handle_message(app_id, token, step, trace_id="dtype")
+        journey.handle_message(app_id, token, expand_step(journey.identity, step), trace_id="dtype")
     journey.record_consent(app_id, token, granted=True, trace_id="dtype")
     journey.handle_message(app_id, token, "INCOME_CERTIFICATE", trace_id="dtype")
     for val in [
@@ -198,7 +200,7 @@ def test_ivr_document_capture_offers_cross_channel_continuation(
         return orch.process_channel_payload("ivr", payload)
 
     for step in ["en", "9876543210", "123456", "yes", "Income Certificate"]:
-        ivr(step)
+        ivr(expand_step(orch.journey.identity, step))
     for val in [
         "Lakshmi Devi",
         "12/04/1995",

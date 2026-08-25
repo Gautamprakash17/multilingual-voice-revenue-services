@@ -1,3 +1,6 @@
+# Production-style demo stack (baked images, no live reload).
+# Day-to-day coding: ./scripts/dev up   (see docker-compose.dev.yml)
+
 services:
   postgres:
     image: postgres:16-alpine

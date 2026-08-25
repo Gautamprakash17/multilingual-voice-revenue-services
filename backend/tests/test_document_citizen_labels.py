@@ -21,6 +21,8 @@ from app.speech.stt import MockSTTProvider
 from app.speech.tts import MockTTSProvider
 from sqlalchemy.orm import Session
 
+from tests.auth_helpers import expand_step
+
 SERVICE = get_service("INCOME_CERTIFICATE")
 INTERNAL_DOC_CODES = tuple(doc.code for doc in SERVICE.documents)
 
@@ -28,7 +30,7 @@ INTERNAL_DOC_CODES = tuple(doc.code for doc in SERVICE.documents)
 @pytest.fixture
 def identity() -> MockIdentityProvider:
     return MockIdentityProvider(
-        [Persona(id="persona-lakshmi", name="Lakshmi Devi", mobile="9876543210", otp="123456")]
+        [Persona(id="persona-lakshmi", name="Lakshmi Devi", mobile="9876543210")]
     )
 
 
@@ -111,7 +113,7 @@ def _reach_document_capture(orch: ChannelOrchestrator, language: str) -> tuple[s
                 "session_ref": token,
                 "modality": "voice",
                 "language": language,
-                "transcript": step,
+                "transcript": expand_step(orch.journey.identity, step),
             },
         )
     last = None

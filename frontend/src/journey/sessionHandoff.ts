@@ -18,26 +18,28 @@ export type WhatsAppResumeNavState = {
   applicationId: string;
 };
 
+export function normalizeCitizenApplicationId(value: string): string {
+  return value.trim().toUpperCase();
+}
+
 export function storeSessionHandoff(applicationId: string, accessToken: string): void {
-  if (!applicationId || !accessToken) return;
+  const id = normalizeCitizenApplicationId(applicationId);
+  if (!id || !accessToken) return;
   const payload: SessionHandoff = {
-    applicationId,
+    applicationId: id,
     accessToken,
     savedAt: Date.now(),
   };
   try {
     sessionStorage.setItem(HANDOFF_KEY, JSON.stringify(payload));
-    sessionStorage.setItem(
-      `${HANDOFF_BY_APP_PREFIX}${applicationId}`,
-      JSON.stringify(payload),
-    );
+    sessionStorage.setItem(`${HANDOFF_BY_APP_PREFIX}${id}`, JSON.stringify(payload));
   } catch {
     // sessionStorage may be unavailable — resume from Apply button still uses router state
   }
 }
 
 export function lookupSessionHandoff(applicationId: string): string | null {
-  const id = applicationId.trim();
+  const id = normalizeCitizenApplicationId(applicationId);
   if (!id) return null;
   try {
     const raw = sessionStorage.getItem(`${HANDOFF_BY_APP_PREFIX}${id}`);

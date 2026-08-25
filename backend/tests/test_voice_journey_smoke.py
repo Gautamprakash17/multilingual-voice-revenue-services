@@ -13,6 +13,8 @@ from app.speech.stt import MockSTTProvider
 from app.speech.tts import MockTTSProvider
 from sqlalchemy.orm import Session
 
+from tests.auth_helpers import expand_step, spaced_otp
+
 
 @pytest.fixture
 def identity() -> MockIdentityProvider:
@@ -22,7 +24,6 @@ def identity() -> MockIdentityProvider:
                 id="persona-lakshmi",
                 name="Lakshmi Devi",
                 mobile="9876543210",
-                otp="123456",
             )
         ]
     )
@@ -70,13 +71,17 @@ def test_full_voice_journey_smoke(orch: ChannelOrchestrator):
     assert lang.audio_b64
 
     mobile = _voice(orch, app_id, token, "7 2 0 4 6 0 9 1 5 5")
-    assert mobile.error == "unknown_mobile"  # persona mobile is 9876543210
+    assert mobile.error is None
+    assert mobile.data.get("auth_step") == "register_offer"
 
+    # Use another number, then the seeded persona mobile.
+    _voice(orch, app_id, token, "ANOTHER")
     mobile_ok = _voice(orch, app_id, token, "9 8 7 6 5 4 3 2 1 0")
     assert mobile_ok.state == JourneyState.AUTHENTICATE.value
     assert "OTP" in (mobile_ok.prompt or "").upper()
 
-    otp = _voice(orch, app_id, token, "1 2 3 4 5 6")
+    otp_code = expand_step(orch.journey.identity, "123456")
+    otp = _voice(orch, app_id, token, spaced_otp(otp_code))
     assert otp.state == JourneyState.CONSENT.value
     assert otp.audio_b64
 

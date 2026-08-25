@@ -11,15 +11,16 @@ from app.models.application import Application
 _PREFIX = "INC"
 
 
+def normalize_application_id(value: str | None) -> str:
+    """Citizen-facing Application ID: trim + uppercase. Does not invent IDs."""
+    return (value or "").strip().upper()
+
+
 def generate_application_id(db: Session, max_attempts: int = 20) -> str:
     """Generate a unique INC-XXXX style reference. Never uses DB primary keys."""
     for _ in range(max_attempts):
         candidate = f"{_PREFIX}-{secrets.randbelow(9000) + 1000}"
-        exists = (
-            db.query(Application.id)
-            .filter(Application.application_id == candidate)
-            .first()
-        )
+        exists = db.query(Application.id).filter(Application.application_id == candidate).first()
         if not exists:
             return candidate
     # Extremely unlikely fallback with extra entropy

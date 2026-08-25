@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
+  fetchCitizenCertificate,
   fetchServices,
   resumeChannel,
   sendChannelMessage,
@@ -10,13 +11,33 @@ import {
   type JourneyResponse,
   type ServiceDocumentConfig,
 } from "../api/client";
+import PhoneSimulator from "../components/PhoneSimulator";
+import { JOURNEY_COMMANDS } from "../journey/actions";
+import { shouldShowPhoneSimulator } from "../journey/phoneSimulator";
 import { citizenVisibleText } from "../journey/chatText";
+import { stateLabel } from "../journey/labels";
+import {
+  continueApplicationLabel,
+  formatNotificationTime,
+  notificationEventLabel,
+  notificationSender,
+  shouldShowContinueApplication,
+  shouldShowViewCertificate,
+  simulatedNotificationLabel,
+  useCitizenNotifications,
+  viewCertificateLabel,
+  whatsappChannelLabel,
+} from "../journey/citizenNotifications";
 import { documentLabel } from "../journey/labels";
 import {
   lookupSessionHandoff,
   storeSessionHandoff,
   type WhatsAppResumeNavState,
 } from "../journey/sessionHandoff";
+import {
+  missingSameBrowserHandoffMessage,
+  whatsappContinueHint,
+} from "../journey/applicationIdentity";
 import {
   waComposerAction,
   waMessageInputAutocomplete,
@@ -46,6 +67,8 @@ export default function WhatsAppSimulatorPage() {
   const [resumeAppId, setResumeAppId] = useState("");
   const [state, setState] = useState("—");
   const [language, setLanguage] = useState("en");
+  const [otpIssued, setOtpIssued] = useState(false);
+  const [authStep, setAuthStep] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [missingDocs, setMissingDocs] = useState<string[]>([]);
@@ -79,10 +102,11 @@ export default function WhatsAppSimulatorPage() {
     missingDocs.length > 0;
 
   const composerAction = waComposerAction(input);
+  const { items: notices } = useCitizenNotifications(applicationId, token);
 
   useEffect(() => {
     threadEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, attachDraftOpen]);
+  }, [messages, attachDraftOpen, notices.length]);
 
   useEffect(() => {
     const first = nextDoc?.accepted_types?.[0]?.code || "";
@@ -105,6 +129,9 @@ export default function WhatsAppSimulatorPage() {
     }
     setState(reply.state);
     if (reply.language) setLanguage(reply.language);
+    const step = typeof reply.data?.auth_step === "string" ? reply.data.auth_step : "";
+    setAuthStep(step);
+    setOtpIssued(reply.data?.otp_issued === true);
     const missing = reply.data?.missing_documents;
     if (Array.isArray(missing)) {
       setMissingDocs(missing.map(String));
@@ -143,7 +170,7 @@ export default function WhatsAppSimulatorPage() {
           : "Could not continue this application. Check the Application ID and try again.";
       setError(
         /403|denied|invalid|not found|404/i.test(msg)
-          ? "This application could not be continued. It may be invalid or the session is no longer available. Start again from Apply, or use Continue on WhatsApp from that page."
+          ? "This application could not be continued. It may be invalid or the session is no longer available in this browser. Start again from Apply or IVR, then Continue application."
           : msg,
       );
     } finally {
@@ -192,12 +219,28 @@ export default function WhatsAppSimulatorPage() {
     if (!appId) return;
     const handoffToken = lookupSessionHandoff(appId);
     if (!handoffToken) {
-      setError(
-        "No secure session was found for this Application ID in this browser. Open Apply, then choose Continue on WhatsApp — you do not need to enter a session token.",
-      );
+      setError(missingSameBrowserHandoffMessage());
       return;
     }
     await doResume(appId, handoffToken);
+  }
+
+  async function sendQuick(text: string) {
+    if (!applicationId || !token || uploading) return;
+    setMessages((m) => [...m, { from: "me", text, at: Date.now() }]);
+    setBusy(true);
+    try {
+      apply(
+        await sendChannelMessage("whatsapp", applicationId, token, {
+          text,
+          language,
+        }),
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Send failed");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function onSend(e: FormEvent) {
@@ -311,15 +354,29 @@ export default function WhatsAppSimulatorPage() {
     });
   }
 
+  function openIssuedCertificate() {
+    if (!applicationId || !token) return;
+    void fetchCitizenCertificate(applicationId, token, { download: false })
+      .then((blob) => {
+        const url = URL.createObjectURL(blob);
+        window.open(url, "_blank", "noopener,noreferrer");
+        window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      })
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : "Certificate is not available yet.");
+      });
+  }
+
   return (
     <section className="panel wa-sim">
       <span className="sim-banner" role="status">
         Demonstration simulator — not a live WhatsApp account
       </span>
-      <h1>WhatsApp Simulator</h1>
+      <p className="eyebrow">Demonstration</p>
+      <h1>WhatsApp</h1>
       <p className="lede">
-        Same certificate journey as Apply. Continue from the web with your Application ID, or
-        start a new WhatsApp session.
+        Continue the same application in a chat-style demonstration. Your Application ID stays the
+        same across Web, WhatsApp, and IVR.
       </p>
       {error && (
         <div className="alert error" role="alert">
@@ -327,7 +384,7 @@ export default function WhatsAppSimulatorPage() {
         </div>
       )}
 
-      <div className="section-card">
+      <div className="section-card wa-toolbar">
         <div className="journey-actions">
           <button
             type="button"
@@ -335,21 +392,18 @@ export default function WhatsAppSimulatorPage() {
             onClick={() => void onStart()}
             disabled={busy || uploading}
           >
-            New WhatsApp session
+            New chat
           </button>
-          <span className="state-pill" aria-label={`State ${state}`}>
-            {state}
-          </span>
+          {applicationId && (
+            <span className="state-pill">{stateLabel(state)}</span>
+          )}
           <span className="meta">{applicationId || "No application yet"}</span>
         </div>
       </div>
 
-      <div className="card resume-box">
-        <h2>Continue an existing application</h2>
-        <p className="muted">
-          Prefer <strong>Continue on WhatsApp</strong> from the Apply page. Or enter your
-          Application ID if you started in this browser.
-        </p>
+      <details className="section-card resume-box">
+        <summary>Continue an existing application</summary>
+        <p className="muted">{whatsappContinueHint()}</p>
         <label htmlFor="wa-resume-app">
           Application ID
           <input
@@ -370,26 +424,99 @@ export default function WhatsAppSimulatorPage() {
         >
           Continue application
         </button>
-      </div>
+      </details>
 
-      <div className="wa-shell">
+      {applicationId && token && (
+        <PhoneSimulator
+          applicationId={applicationId}
+          token={token}
+          otpActive={shouldShowPhoneSimulator({ state, authStep, otpIssued })}
+          onViewCertificate={openIssuedCertificate}
+          onContinueApplication={() => {
+            messageInputRef.current?.focus();
+          }}
+        />
+      )}
+
+      {state === "AUTHENTICATE" && authStep === "register_offer" && (
+        <div className="action-bar-buttons" style={{ marginBottom: "0.75rem" }}>
+          <button type="button" className="btn-success" disabled={busy} onClick={() => void sendQuick(JOURNEY_COMMANDS.register)}>
+            Register
+          </button>
+          <button type="button" className="ghost" disabled={busy} onClick={() => void sendQuick(JOURNEY_COMMANDS.anotherNumber)}>
+            Use another number
+          </button>
+        </div>
+      )}
+
+      <div className="wa-sim-layout">
+      <div className="wa-shell wa-shell-primary">
         <div className="wa-header">
           <strong>Revenue Services</strong>
           <span>
             {applicationId
-              ? `${applicationId} · ${state}`
-              : "Start a session or continue from Apply"}
+              ? `${applicationId} · ${stateLabel(state)}`
+              : "Start a chat or continue an application"}
           </span>
         </div>
         <div className="wa-thread" role="log" aria-live="polite" aria-relevant="additions">
-          {messages.length === 0 && (
+          {messages.length === 0 && notices.length === 0 && (
             <div className="wa-empty">
+              <p className="conversation-empty-title">Start a conversation</p>
               <p>
-                No messages yet. Choose <strong>New WhatsApp session</strong>, or continue from
-                Apply with <strong>Continue on WhatsApp</strong>.
+                Choose <strong>New chat</strong>, or continue an existing application. Status
+                updates appear here as messages.
               </p>
             </div>
           )}
+          {notices.map((item) => (
+            <div
+              key={item.id}
+              className={`wa-bubble bot wa-notice${
+                item.event_type === "ISSUED"
+                  ? " wa-notice-issued"
+                  : item.event_type === "NEEDS_CORRECTION"
+                    ? " wa-notice-correction"
+                    : ""
+              }`}
+            >
+              <span className="wa-notice-label">
+                {notificationSender()} · {whatsappChannelLabel()}
+              </span>
+              {item.event_type === "ISSUED" ? (
+                <strong className="wa-notice-title">✓ Certificate Issued</strong>
+              ) : item.event_type === "NEEDS_CORRECTION" ? (
+                <strong className="wa-notice-title">Correction required</strong>
+              ) : (
+                <strong className="wa-notice-title">
+                  {notificationEventLabel(item.event_type)}
+                </strong>
+              )}
+              <span className="wa-bubble-text">{item.message}</span>
+              <span className="wa-notice-meta">
+                {item.application_id} · {simulatedNotificationLabel()}
+              </span>
+              {shouldShowViewCertificate(item) && (
+                <button type="button" className="wa-notice-action" onClick={openIssuedCertificate}>
+                  {viewCertificateLabel()}
+                </button>
+              )}
+              {shouldShowContinueApplication(item) && (
+                <button
+                  type="button"
+                  className="wa-notice-action"
+                  onClick={() => messageInputRef.current?.focus()}
+                >
+                  {continueApplicationLabel()}
+                </button>
+              )}
+              {item.created_at && (
+                <time className="wa-bubble-time" dateTime={item.created_at}>
+                  {formatNotificationTime(item.created_at)}
+                </time>
+              )}
+            </div>
+          ))}
           {messages.map((m, i) =>
             m.from === "attach" && m.attachMeta ? (
               <div
@@ -574,6 +701,7 @@ export default function WhatsAppSimulatorPage() {
             </button>
           )}
         </form>
+      </div>
       </div>
     </section>
   );

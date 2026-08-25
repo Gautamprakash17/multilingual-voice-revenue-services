@@ -42,7 +42,12 @@ ALLOWED_TRANSITIONS: dict[JourneyState, frozenset[JourneyState]] = {
         {JourneyState.AUTHENTICATE, JourneyState.ESCALATED}
     ),
     JourneyState.AUTHENTICATE: frozenset(
-        {JourneyState.CONSENT, JourneyState.AUTH_FAILED, JourneyState.ESCALATED}
+        {
+            JourneyState.CONSENT,
+            JourneyState.AUTH_FAILED,
+            JourneyState.ESCALATED,
+            JourneyState.FIELD_CONFIRMATION,
+        }
     ),
     JourneyState.AUTH_FAILED: frozenset(
         {JourneyState.AUTHENTICATE, JourneyState.ESCALATED}
@@ -63,7 +68,12 @@ ALLOWED_TRANSITIONS: dict[JourneyState, frozenset[JourneyState]] = {
         }
     ),
     JourneyState.FIELD_CONFIRMATION: frozenset(
-        {JourneyState.FORM_CAPTURE, JourneyState.ESCALATED}
+        {
+            JourneyState.FORM_CAPTURE,
+            JourneyState.AUTHENTICATE,
+            JourneyState.CONSENT,
+            JourneyState.ESCALATED,
+        }
     ),
     JourneyState.DOCUMENT_CAPTURE: frozenset(
         {

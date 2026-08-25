@@ -6,7 +6,7 @@ Channels never touch the state machine directly.
 from __future__ import annotations
 
 import secrets
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.boundary.classification import Classification
 from app.boundary.gateway import DataBoundaryGateway, GatewayRequest
 from app.channels.adapters import get_adapter
-from app.channels.envelope import MessageEnvelope, Modality, validate_envelope
+from app.channels.envelope import Channel, MessageEnvelope, Modality, validate_envelope
 from app.models.application import Application, ConversationSession
 from app.nlu.consent import parse_consent_response
 from app.nlu.provider import NLUProvider, get_nlu_provider
@@ -26,7 +26,9 @@ from app.services.i18n import (
     document_next_prompt,
     document_reupload_prompt,
     field_prompt,
+    language_select_ivr_prompt,
     language_select_prompt,
+    service_select_ivr_prompt,
     t,
 )
 from app.services.journey import JourneyReply, JourneyService
@@ -54,6 +56,8 @@ _SPEAK_ON_ERROR = frozenset(
     {
         "unknown_mobile",
         "invalid_otp",
+        "otp_expired",
+        "otp_max_attempts",
         "validation_failed",
         "invalid_language",
         "language_ambiguous",
@@ -64,6 +68,8 @@ _SPEAK_ON_ERROR = frozenset(
         "reply_PAY_or_CORRECT",
         "payment_failed",
         "payment_timeout",
+        "no_speech",
+        "registration_name_required",
     }
 )
 
@@ -234,6 +240,12 @@ class ChannelOrchestrator:
                         "stt_provider": provider,
                         "language_hint": language_hint,
                         "recovery": "retry_or_type",
+                        # Keep IVR/web auth keypad mode stable across STT retries.
+                        **(
+                            {"auth_step": app.auth_step}
+                            if getattr(app, "auth_step", None)
+                            else {}
+                        ),
                     },
                 )
 
@@ -274,9 +286,7 @@ class ChannelOrchestrator:
         )
 
         # Map NLU / DTMF into journey text without logging raw content
-        journey_text = self._to_journey_text(
-            text, nlu, envelope, expected, app.current_state
-        )
+        journey_text = self._to_journey_text(text, nlu, envelope, expected, app)
         if JourneyState(app.current_state) == JourneyState.LANGUAGE_SELECT:
             choice = resolve_language_choice(journey_text)
             if choice.code:
@@ -293,6 +303,19 @@ class ChannelOrchestrator:
 
         # Localize prompt/message when possible
         localized = self._localize_reply(reply, app.language or language)
+        if envelope.channel == Channel.IVR:
+            if localized.state == JourneyState.LANGUAGE_SELECT.value:
+                localized = replace(localized, prompt=language_select_ivr_prompt())
+            elif localized.state == JourneyState.AUTHENTICATE.value:
+                localized = self._ivr_authenticate_prompts(
+                    localized, app.language or language
+                )
+            elif localized.state == JourneyState.FIELD_CONFIRMATION.value:
+                localized = self._ivr_field_confirmation_prompts(
+                    localized, app.language or language
+                )
+            else:
+                localized = self._ivr_menu_prompts(localized, app.language or language)
         audio_b64 = None
         audio_mime = None
         speak = localized.prompt or localized.message
@@ -396,6 +419,8 @@ class ChannelOrchestrator:
             data={
                 "fields_captured": list((app.form_data or {}).keys()),
                 "consent_granted": app.consent_granted,
+                "auth_step": app.auth_step,
+                "otp_issued": app.auth_step == "otp",
             },
         )
 
@@ -403,7 +428,11 @@ class ChannelOrchestrator:
         reply = self.journey.start(channel=channel, trace_id=trace_id)
         self.metrics.record_session(channel, None)
         welcome = t("welcome", "en")
-        prompt = language_select_prompt("en")
+        prompt = (
+            language_select_ivr_prompt()
+            if channel == Channel.IVR.value
+            else language_select_prompt("en")
+        )
         speak = f"{welcome} {prompt}".strip()
         audio_b64 = None
         audio_mime = None
@@ -454,16 +483,147 @@ class ChannelOrchestrator:
         spoken_value = speech_value_for_confirmation(str(field), str(value))
         return t("field_confirm_heard", lang, value=spoken_value)
 
+    def _ivr_authenticate_prompts(
+        self, reply: JourneyReply, language: str | None
+    ) -> JourneyReply:
+        """IVR keypad wording — does not change journey tokens or web/WhatsApp copy."""
+        lang = language or "en"
+        data = dict(reply.data or {})
+        step = data.get("auth_step") or "mobile"
+        if "auth_step" not in data:
+            data["auth_step"] = step
+            data.setdefault("otp_issued", False)
+        prompt = reply.prompt
+        message = reply.message
+        if step == "otp":
+            prompt = t("auth_otp_ivr", lang)
+            if not reply.error:
+                message = prompt
+        elif step == "register_offer":
+            # DTMF menu — always include Press 1 / Press 2 (web/WhatsApp keep auth_register_offer).
+            prompt = t("auth_register_offer_ivr", lang)
+            message = t("auth_register_offer_ivr", lang)
+        elif step in {"mobile", ""}:
+            prompt = t("auth_mobile_ivr", lang)
+            if reply.error == "unknown_mobile":
+                message = t("auth_mobile_unrecognized_ivr", lang)
+            elif not reply.error:
+                message = prompt
+        return replace(reply, prompt=prompt, message=message, data=data)
+
+    def _ivr_field_confirmation_prompts(
+        self, reply: JourneyReply, language: str | None
+    ) -> JourneyReply:
+        """IVR 1/2 confirmation wording — web/WhatsApp keep field_confirm_heard."""
+        lang = language or "en"
+        value = (reply.data or {}).get("proposed_display") or (reply.data or {}).get(
+            "proposed_value"
+        )
+        if not value:
+            return reply
+        text = t("field_confirm_heard_ivr", lang, value=value)
+        return replace(reply, prompt=text, message=text)
+
+    def _ivr_menu_prompts(
+        self, reply: JourneyReply, language: str | None
+    ) -> JourneyReply:
+        """IVR Press-1/Press-2 wording for consent, service, review, and payment."""
+        lang = language or "en"
+        state = reply.state
+        if state == JourneyState.CONSENT.value:
+            if reply.error == "consent_unclear":
+                text = t("consent_unclear_ivr", lang)
+            else:
+                text = t("consent_ivr", lang)
+            return replace(reply, prompt=text, message=text)
+        if state == JourneyState.SERVICE_SELECT.value:
+            menu = service_select_ivr_prompt(lang)
+            message = t("consent_recorded", lang)
+            if reply.error in {"unknown_service", "service_select_ambiguous"}:
+                message = reply.message or menu
+            return replace(reply, prompt=menu, message=message if not reply.error else menu)
+        if state == JourneyState.REVIEW_CONFIRM.value:
+            text = t("review_intro_ivr", lang)
+            return replace(reply, prompt=text, message=text)
+        if state == JourneyState.FEE_QUOTE.value:
+            amount, currency = _fee_display(reply)
+            text = t("fee_quote_ivr", lang, amount=amount, currency=currency)
+            return replace(reply, prompt=text, message=text)
+        if state == JourneyState.PAYMENT.value:
+            amount, currency = _fee_display(reply)
+            text = t("payment_prompt_ivr", lang, amount=amount, currency=currency)
+            return replace(reply, prompt=text, message=text)
+        if state == JourneyState.PAYMENT_FAILED.value:
+            text = t("payment_failed_ivr", lang)
+            return replace(reply, prompt=text, message=text)
+        return reply
+
+    def _map_ivr_dtmf(self, dtmf: str, app: Application) -> str:
+        """Map telephone keypad digits to existing journey tokens (DTMF only)."""
+        raw = (dtmf or "").strip()
+        state = JourneyState(app.current_state)
+        if state == JourneyState.LANGUAGE_SELECT:
+            catalog = get_language_catalog()
+            if raw.isdigit():
+                idx = int(raw)
+                if 1 <= idx <= len(catalog.languages):
+                    return catalog.languages[idx - 1].code
+            return raw
+        if state in {JourneyState.CONSENT}:
+            if raw == "1":
+                return "YES"
+            if raw == "2":
+                return "NO"
+            return raw
+        if state == JourneyState.FIELD_CONFIRMATION:
+            # IVR telephone confirmation — 1 confirm, 2 change/retry.
+            if raw == "1":
+                return "YES"
+            if raw == "2":
+                return "NO"
+            return raw
+        if state == JourneyState.AUTHENTICATE and (app.auth_step or "") == "register_offer":
+            if raw == "1":
+                return "REGISTER"
+            if raw == "2":
+                return "ANOTHER"
+            return raw
+        if state == JourneyState.SERVICE_SELECT:
+            from app.services.catalogue import get_service_catalogue
+
+            codes = sorted(get_service_catalogue())
+            if raw == "1" and len(codes) == 1:
+                return "YES"
+            if raw.isdigit():
+                idx = int(raw)
+                if 1 <= idx <= len(codes):
+                    return codes[idx - 1]
+            return raw
+        if state == JourneyState.REVIEW_CONFIRM:
+            if raw == "1":
+                return "CONFIRM"
+            if raw == "2":
+                return "CORRECT"
+            return raw
+        if state in _PAYMENT_STATES:
+            if raw == "1":
+                return "PAY"
+            if raw == "2":
+                return "CORRECT"
+            return raw
+        return raw
+
     def _to_journey_text(
         self,
         text: str,
         nlu: Any,
         envelope: MessageEnvelope,
         expected: str | None,
-        current_state: str,
+        app: Application,
     ) -> str:
+        current_state = app.current_state
         if envelope.modality == Modality.DTMF:
-            return str(envelope.content.get("dtmf") or text)
+            return self._map_ivr_dtmf(str(envelope.content.get("dtmf") or text), app)
         if current_state == JourneyState.FIELD_CONFIRMATION.value:
             if nlu.intent == "CONSENT":
                 return "YES" if nlu.slots.get("granted") else "NO"
@@ -536,8 +696,23 @@ class ChannelOrchestrator:
             prompt = language_select_prompt(lang)
             message = t("welcome", lang)
         elif state == JourneyState.AUTHENTICATE.value:
-            if reply.prompt and "OTP" in (reply.prompt or "").upper():
+            auth_step = (reply.data or {}).get("auth_step")
+            if auth_step == "otp" or (reply.prompt and "OTP" in (reply.prompt or "").upper()):
                 prompt = t("auth_otp", lang)
+                if reply.error == "invalid_otp":
+                    message = t("auth_otp_incorrect", lang)
+                elif reply.error == "otp_expired":
+                    message = t("auth_otp_expired", lang)
+                elif reply.error == "otp_max_attempts":
+                    message = t("auth_otp_max_attempts", lang)
+                elif not reply.error:
+                    message = t("auth_otp_sent", lang)
+            elif auth_step == "register_offer":
+                prompt = t("auth_register_offer", lang)
+                message = t("auth_register_offer", lang)
+            elif auth_step == "register_name":
+                prompt = t("auth_register_name", lang)
+                message = t("auth_register_name", lang)
             else:
                 prompt = t("auth_mobile", lang)
         elif state == JourneyState.CONSENT.value:
@@ -664,6 +839,13 @@ class ChannelOrchestrator:
         if state == JourneyState.LANGUAGE_SELECT:
             return language_select_prompt(lang)
         if state == JourneyState.AUTHENTICATE:
+            step = app.auth_step or ("otp" if app.pending_mobile else "mobile")
+            if step == "otp":
+                return t("auth_otp", lang)
+            if step == "register_offer":
+                return t("auth_register_offer", lang)
+            if step == "register_name":
+                return t("auth_register_name", lang)
             return t("auth_mobile", lang)
         if state == JourneyState.CONSENT:
             return t("consent", lang)

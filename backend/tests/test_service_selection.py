@@ -25,6 +25,8 @@ from app.speech.stt import MockSTTProvider
 from app.speech.tts import MockTTSProvider
 from sqlalchemy.orm import Session
 
+from tests.auth_helpers import current_otp, orch_play_script, play_script, spaced_otp
+
 
 @pytest.fixture(autouse=True)
 def _clear_catalogue_cache():
@@ -41,7 +43,6 @@ def identity() -> MockIdentityProvider:
                 id="persona-lakshmi",
                 name="Lakshmi Devi",
                 mobile="9876543210",
-                otp="123456",
             )
         ]
     )
@@ -73,8 +74,7 @@ def _to_service_select(journey: JourneyService) -> tuple[str, str]:
     start = journey.start(channel="web")
     app_id, token = start.application_id, start.access_token
     assert token
-    for step in ["en", "9876543210", "123456", "YES"]:
-        journey.handle_message(app_id, token, step, trace_id="svc-select")
+    play_script(journey, app_id, token, ["en", "9876543210", "__OTP__", "YES"], trace="svc-select")
     return app_id, token
 
 
@@ -154,8 +154,10 @@ def test_voice_and_button_share_service_code(orch: ChannelOrchestrator):
             },
         )
 
-    for step in ["en", "9876543210", "123456", "yes"]:
+    for step in ["en", "9876543210"]:
         voice(step)
+    voice(spaced_otp(current_otp(orch.journey.identity)))  # type: ignore[arg-type]
+    voice("yes")
 
     voice_reply = voice("apply for income certificate")
     assert voice_reply.state == JourneyState.FORM_CAPTURE.value
@@ -163,18 +165,7 @@ def test_voice_and_button_share_service_code(orch: ChannelOrchestrator):
 
     start2 = orch.start(channel="web")
     app_id2, token2 = start2.application_id, start2.access_token
-    for step in ["en", "9876543210", "123456", "yes"]:
-        orch.process_channel_payload(
-            "web",
-            {
-                "application_id": app_id2,
-                "access_token": token2,
-                "session_ref": token2,
-                "modality": "voice",
-                "language": "en",
-                "transcript": step,
-            },
-        )
+    orch_play_script(orch, app_id2, token2, ["en", "9876543210", "__OTP__", "yes"])
     button_reply = orch.process_channel_payload(
         "web",
         {

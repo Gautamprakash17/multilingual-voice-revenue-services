@@ -20,6 +20,8 @@ from app.services.validation import validate_field
 from fastapi import UploadFile
 from sqlalchemy.orm import Session
 
+from tests.auth_helpers import complete_auth, current_otp, submit_current_otp
+
 
 @pytest.fixture
 def identity() -> MockIdentityProvider:
@@ -29,7 +31,6 @@ def identity() -> MockIdentityProvider:
                 id="persona-lakshmi",
                 name="Lakshmi Devi",
                 mobile="9876543210",
-                otp="123456",
             )
         ]
     )
@@ -51,7 +52,7 @@ def _auth_to_form(journey: JourneyService, trace: str = "t-1"):
     app_id = start.application_id
     journey.handle_message(app_id, token, "en", trace_id=trace)
     journey.handle_message(app_id, token, "9876543210", trace_id=trace)
-    journey.handle_message(app_id, token, "123456", trace_id=trace)
+    submit_current_otp(journey, app_id, token, trace=trace)
     journey.record_consent(app_id, token, granted=True, trace_id=trace)
     journey.handle_message(app_id, token, "INCOME_CERTIFICATE", trace_id=trace)
     return app_id, token
@@ -116,9 +117,11 @@ def test_mock_otp_success_and_failure(journey: JourneyService):
     assert token
     journey.handle_message(app_id, token, "en", trace_id="auth")
     journey.handle_message(app_id, token, "9876543210", trace_id="auth")
-    fail = journey.handle_message(app_id, token, "000000", trace_id="auth")
+    otp = current_otp(journey.identity)  # type: ignore[arg-type]
+    wrong = "000000" if otp != "000000" else "111111"
+    fail = journey.handle_message(app_id, token, wrong, trace_id="auth")
     assert fail.error == "invalid_otp"
-    ok = journey.handle_message(app_id, token, "123456", trace_id="auth")
+    ok = journey.handle_message(app_id, token, otp, trace_id="auth")
     assert ok.state == JourneyState.CONSENT.value
 
 
@@ -128,7 +131,7 @@ def test_consent_required_before_data_capture(journey: JourneyService):
     assert token
     journey.handle_message(app_id, token, "en", trace_id="consent")
     journey.handle_message(app_id, token, "9876543210", trace_id="consent")
-    journey.handle_message(app_id, token, "123456", trace_id="consent")
+    submit_current_otp(journey, app_id, token, trace="consent")
     # Decline consent
     declined = journey.record_consent(app_id, token, granted=False, trace_id="consent")
     assert declined.error == "consent_declined"
@@ -415,12 +418,16 @@ def test_no_cloud_provider_called_for_restricted_journey(
 
 
 def test_seeded_identity_provider_loads():
+    get_identity_provider.cache_clear()
     provider = get_identity_provider()
     persona = provider.find_by_mobile("9876543210")
     assert persona is not None
     assert persona.name == "Lakshmi Devi"
     assert not hasattr(persona, "language")
-    assert provider.verify_otp("9876543210", "123456").success is True
+    provider.request_otp("9876543210")
+    otp = current_otp(provider, "9876543210")  # type: ignore[arg-type]
+    assert provider.verify_otp("9876543210", otp).success is True
+    get_identity_provider.cache_clear()
 
 
 def test_session_language_independent_of_persona(journey: JourneyService):
@@ -429,9 +436,7 @@ def test_session_language_independent_of_persona(journey: JourneyService):
     token = start.access_token
     assert token
     app_id = start.application_id
-    journey.handle_message(app_id, token, "en", trace_id="lang-indep")
-    journey.handle_message(app_id, token, "9876543210", trace_id="lang-indep")
-    reply = journey.handle_message(app_id, token, "123456", trace_id="lang-indep")
+    reply = complete_auth(journey, app_id, token, language="en", trace="lang-indep")
     assert reply.state == JourneyState.CONSENT.value
     assert journey._get_app_by_ref(app_id).language == "en"
     assert journey._get_app_by_ref(app_id).applicant_id == "persona-lakshmi"

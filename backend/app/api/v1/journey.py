@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_gateway
@@ -15,7 +16,11 @@ from app.api.v1.schemas import (
 from app.boundary.gateway import DataBoundaryGateway
 from app.core.database import get_db
 from app.services.catalogue import get_service
-from app.services.documents import DocumentValidationError, store_document
+from app.services.documents import (
+    ISSUED_CERTIFICATE_CODE,
+    DocumentValidationError,
+    store_document,
+)
 from app.services.i18n import document_label
 from app.services.i18n import t as i18n_t
 from app.services.journey import JourneyService
@@ -96,6 +101,37 @@ def get_receipt(
     except PermissionError:
         raise HTTPException(status_code=403, detail="Access denied") from None
     return _to_response(reply)
+
+
+@router.get("/{application_id}/documents/{document_code}")
+def download_issued_certificate(
+    application_id: str,
+    document_code: str,
+    db: Session = Depends(get_db),
+    x_session_token: str | None = Header(default=None),
+    download: bool = False,
+) -> Response:
+    """Citizen download of the issued certificate. Requires the session token."""
+    token = _require_token(x_session_token)
+    if document_code.upper() != ISSUED_CERTIFICATE_CODE:
+        raise HTTPException(status_code=404, detail="Document not found")
+    service = JourneyService(db)
+    try:
+        payload, filename = service.get_issued_certificate_bytes(application_id, token)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Issued certificate not found") from None
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Access denied") from None
+    disposition = "attachment" if download else "inline"
+    return Response(
+        content=payload,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'{disposition}; filename="{filename}"',
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.post("/{application_id}/message", response_model=JourneyResponse)
@@ -237,9 +273,7 @@ async def upload_document(
         if "Document type is required" in detail:
             detail = i18n_t("document_type_required", lang)
         elif "is not accepted" in detail:
-            detail = i18n_t(
-                "document_type_unsupported", lang, document_name=category
-            )
+            detail = i18n_t("document_type_unsupported", lang, document_name=category)
         try:
             svc = JourneyService(db)
             app2 = svc._get_app_by_ref(application_id)

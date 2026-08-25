@@ -74,6 +74,82 @@ export function formatFee(amountPaise: number, currency: string): string {
   return `${amount.toFixed(2)} ${currency}`;
 }
 
+export function processingStatusLabel(status: string | null | undefined): string {
+  const key = (status || "").toUpperCase();
+  const labels: Record<string, string> = {
+    DRAFT: "Draft",
+    SUBMITTED: "Submitted",
+    UNDER_REVIEW: "Under review",
+    NEEDS_CORRECTION: "Correction required",
+    APPROVED: "Approved",
+    ISSUED: "Issued",
+    REJECTED: "Rejected",
+  };
+  if (labels[key]) return labels[key];
+  if (!status) return "In progress";
+  return status.replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+export function processingStatusBadgeClass(status: string | null | undefined): string {
+  const key = (status || "").toUpperCase();
+  if (key === "ISSUED" || key === "APPROVED" || key === "SUBMITTED") return "badge badge-success";
+  if (key === "REJECTED") return "badge badge-error";
+  if (key === "NEEDS_CORRECTION") return "badge badge-warning";
+  return "badge badge-info";
+}
+
+export type StatusLifecycleStep = {
+  id: string;
+  label: string;
+  phase: "done" | "current" | "upcoming";
+};
+
+/** Presentation-only lifecycle for existing processing_status values. */
+export function statusLifecycleSteps(
+  status: string | null | undefined,
+): StatusLifecycleStep[] {
+  const key = (status || "").toUpperCase();
+  if (!key || key === "DRAFT") return [];
+
+  const showCorrection = key === "NEEDS_CORRECTION";
+  const terminalId =
+    key === "REJECTED" ? "REJECTED" : key === "ISSUED" || key === "APPROVED" ? "ISSUED" : "ISSUED";
+
+  const ids: string[] = ["SUBMITTED", "UNDER_REVIEW"];
+  if (showCorrection) ids.push("NEEDS_CORRECTION");
+  ids.push(terminalId);
+
+  const rank: Record<string, number> = {
+    SUBMITTED: 0,
+    UNDER_REVIEW: 1,
+    NEEDS_CORRECTION: 2,
+    ISSUED: showCorrection ? 3 : 2,
+    REJECTED: showCorrection ? 3 : 2,
+    APPROVED: showCorrection ? 3 : 2,
+  };
+  const currentRank = rank[key] ?? 1;
+
+  return ids.map((id) => {
+    const stepRank = rank[id] ?? 0;
+    let phase: StatusLifecycleStep["phase"] = "upcoming";
+    if (id === key || (id === "ISSUED" && key === "APPROVED")) phase = "current";
+    else if (stepRank < currentRank) phase = "done";
+    return {
+      id,
+      label: processingStatusLabel(id),
+      phase,
+    };
+  });
+}
+
+export function citizenServiceBlurb(description: string | null | undefined): string {
+  const cleaned = String(description || "")
+    .replace(/POC service definition[^.]*\.?/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || "Apply through a guided digital journey.";
+}
+
 export function serviceDisplayName(
   code: string | undefined,
   services: Array<{ code: string; display_name: string }>,

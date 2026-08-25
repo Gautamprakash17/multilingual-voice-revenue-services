@@ -6,19 +6,26 @@ import secrets
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from app.adapters.identity import IdentityProvider, get_identity_provider
+from app.adapters.identity import IdentityProvider, Persona, get_identity_provider
 from app.adapters.payment import PaymentOutcome, get_payment_provider
 from app.boundary.classification import Classification
 from app.boundary.gateway import DataBoundaryGateway, GatewayRequest
 from app.models.application import Application, ConversationSession, PaymentRecord
-from app.nlu.consent import parse_consent_response, parse_field_confirmation_response
+from app.models.identity import SyntheticCitizen
+from app.nlu.consent import (
+    parse_consent_response,
+    parse_field_confirmation_response,
+    parse_registration_choice,
+)
 from app.platform.audit import write_audit_event
 from app.platform.metrics import get_metrics
-from app.services.application_ids import generate_application_id
+from app.services.application_ids import generate_application_id, normalize_application_id
 from app.services.catalogue import FieldDef, ServiceDefinition, get_service
+from app.services.documents import ISSUED_CERTIFICATE_CODE
 from app.services.i18n import (
     document_label,
     document_missing_list,
@@ -30,6 +37,7 @@ from app.services.i18n import (
 from app.services.i18n import field_prompt as i18n_field_prompt
 from app.services.i18n import t as i18n_t
 from app.services.languages import get_language_catalog
+from app.services.notifications import NotificationService
 from app.services.receipts import generate_receipt, latest_receipt
 from app.services.service_selection import (
     ServiceSelectionStatus,
@@ -57,6 +65,7 @@ from app.speech.mobile import (
     is_valid_indian_mobile,
     normalize_indian_mobile_digits,
 )
+from app.speech.names import is_person_name_field, normalize_spoken_person_name
 
 SERVICE_CODE = "INCOME_CERTIFICATE"
 MAX_AUTH_ATTEMPTS = 3
@@ -85,6 +94,7 @@ class JourneyService:
         self.identity = identity or get_identity_provider()
         self.gateway = gateway
         self.service: ServiceDefinition = get_service(SERVICE_CODE)
+        self._hydrate_synthetic_citizens()
 
     # ---- helpers ----
 
@@ -134,9 +144,10 @@ class JourneyService:
         )
 
     def _get_app_by_ref(self, application_id: str) -> Application:
+        ref = normalize_application_id(application_id)
         app = (
             self.db.query(Application)
-            .filter(Application.application_id == application_id)
+            .filter(Application.application_id == ref)
             .one_or_none()
         )
         if not app:
@@ -181,6 +192,55 @@ class JourneyService:
 
     def _lang(self, app: Application) -> str:
         return app.language or "en"
+
+    def _hydrate_synthetic_citizens(self) -> None:
+        merge = getattr(self.identity, "merge_personas", None)
+        if not callable(merge):
+            return
+        rows = self.db.query(SyntheticCitizen).all()
+        if not rows:
+            return
+        merge(
+            [Persona(id=row.persona_id, name=row.name, mobile=row.mobile) for row in rows]
+        )
+
+    def _persist_synthetic_citizen(self, persona: Persona) -> None:
+        existing = (
+            self.db.query(SyntheticCitizen)
+            .filter(SyntheticCitizen.mobile == persona.mobile)
+            .one_or_none()
+        )
+        if existing:
+            return
+        self.db.add(
+            SyntheticCitizen(
+                id=str(uuid4()),
+                persona_id=persona.id,
+                name=persona.name,
+                mobile=persona.mobile,
+            )
+        )
+
+    def _citizen_kind(self, mobile: str | None) -> str | None:
+        if not mobile:
+            return None
+        return "existing" if self.identity.find_by_mobile(mobile) else "new"
+
+    def _auth_data(
+        self,
+        app: Application,
+        *,
+        otp_issued: bool = False,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "auth_step": app.auth_step or "mobile",
+            "otp_issued": otp_issued,
+            "citizen_kind": self._citizen_kind(app.pending_mobile),
+        }
+        if extra:
+            data.update(extra)
+        return data
 
     def _assert_local_only(self, trace_id: str | None) -> None:
         """Prove no cloud provider is invoked for restricted journey data."""
@@ -376,12 +436,22 @@ class JourneyService:
                 trace_id=trace_id,
                 input_modality=input_modality,
             )
+        if state == JourneyState.AUTHENTICATE:
+            return handler(
+                app,
+                session,
+                raw,
+                trace_id=trace_id,
+                input_modality=input_modality,
+            )
         return handler(app, session, raw, trace_id=trace_id)
 
     def _normalize_voice_field_input(self, field: FieldDef, text: str) -> str:
-        """Type-driven speech normalization before validation / confirmation.
+        """Speech normalization before validation / confirmation.
 
-        Driven by catalogue ``field.type`` — not field-name special cases.
+        Driven by catalogue ``field.type``. Person-name fields additionally
+        strip conversational prefixes (``my name is …``) — other string fields
+        only get light STT cleanup.
         """
         if field.type == "mobile":
             extracted = extract_spoken_mobile(text)
@@ -399,6 +469,10 @@ class JourneyService:
                 return normalized
             return text
         if field.type == "string":
+            if is_person_name_field(field.name):
+                extracted = normalize_spoken_person_name(text)
+                # Empty → fail validation rather than storing the raw sentence.
+                return extracted if extracted is not None else ""
             return normalize_spoken_text_field(text)
         return text
 
@@ -565,17 +639,183 @@ class JourneyService:
             data={"language": lang},
         )
 
-    def _on_authenticate(
-        self, app: Application, session: ConversationSession, text: str, *, trace_id: str | None
+    def _extract_auth_mobile(self, text: str) -> str | None:
+        mobile = extract_spoken_mobile(text)
+        if mobile:
+            return mobile
+        compact = normalize_indian_mobile_digits(text)
+        if is_valid_indian_mobile(compact):
+            return compact
+        return None
+
+    def _issue_otp_reply(
+        self,
+        app: Application,
+        *,
+        lang: str,
+        trace_id: str | None,
+        message_key: str = "auth_otp_sent",
+        error: str | None = None,
     ) -> JourneyReply:
-        # Two-step: mobile then OTP
-        if not app.pending_mobile:
-            lang = app.language or "en"
-            mobile = extract_spoken_mobile(text)
-            if not mobile:
-                compact = normalize_indian_mobile_digits(text)
-                if is_valid_indian_mobile(compact):
-                    mobile = compact
+        self.identity.request_otp(app.pending_mobile or "")
+        app.auth_step = "otp"
+        self._audit(
+            "AUTH_REQUESTED",
+            trace_id=trace_id,
+            metadata={
+                "application_ref": app.application_id,
+                "mobile_last4": (app.pending_mobile or "")[-4:] or "****",
+            },
+        )
+        return JourneyReply(
+            application_id=app.application_id,
+            state=app.current_state,
+            message=i18n_t(message_key, lang),
+            prompt=i18n_t("auth_otp", lang),
+            error=error,
+            data=self._auth_data(app, otp_issued=True),
+        )
+
+    def _complete_authenticated(
+        self,
+        app: Application,
+        session: ConversationSession,
+        persona: Persona,
+        *,
+        lang: str,
+        trace_id: str | None,
+        message: str,
+    ) -> JourneyReply:
+        app.applicant_id = persona.id
+        app.pending_mobile = None
+        app.auth_step = None
+        app.auth_attempts = 0
+        clear_sms = getattr(self.identity, "clear_demo_sms", None)
+        if callable(clear_sms) and persona.mobile:
+            clear_sms(persona.mobile)
+        self._audit(
+            "AUTH_SUCCESS",
+            trace_id=trace_id,
+            actor_id=persona.id,
+            metadata={"application_ref": app.application_id, "persona_id": persona.id},
+        )
+        self._transition(app, session, JourneyState.CONSENT, trace_id=trace_id)
+        return JourneyReply(
+            application_id=app.application_id,
+            state=app.current_state,
+            message=message,
+            prompt=self.service.prompts.get("consent"),
+            data={"auth_step": "complete", "otp_issued": False},
+        )
+
+    def _on_authenticate(
+        self,
+        app: Application,
+        session: ConversationSession,
+        text: str,
+        *,
+        trace_id: str | None,
+        input_modality: str | None = None,
+    ) -> JourneyReply:
+        lang = app.language or "en"
+        step = app.auth_step or ("otp" if app.pending_mobile else "mobile")
+
+        if step == "register_offer":
+            entered = self._extract_auth_mobile(text)
+            if entered:
+                app.pending_mobile = entered
+                app.auth_attempts = 0
+                if self.identity.find_by_mobile(entered):
+                    return self._issue_otp_reply(app, lang=lang, trace_id=trace_id)
+                app.auth_step = "register_offer"
+                return JourneyReply(
+                    application_id=app.application_id,
+                    state=app.current_state,
+                    message=i18n_t("auth_register_offer", lang),
+                    prompt=i18n_t("auth_register_offer", lang),
+                    data=self._auth_data(app),
+                )
+            choice = parse_registration_choice(text)
+            if choice == "another":
+                app.pending_mobile = None
+                app.auth_step = "mobile"
+                app.auth_attempts = 0
+                return JourneyReply(
+                    application_id=app.application_id,
+                    state=app.current_state,
+                    message=i18n_t("auth_mobile", lang),
+                    prompt=i18n_t("auth_mobile", lang),
+                    data=self._auth_data(app),
+                )
+            if choice != "register":
+                return JourneyReply(
+                    application_id=app.application_id,
+                    state=app.current_state,
+                    message=i18n_t("auth_register_offer", lang),
+                    prompt=i18n_t("auth_register_offer", lang),
+                    data=self._auth_data(app),
+                )
+            return self._issue_otp_reply(app, lang=lang, trace_id=trace_id)
+
+        if step == "register_name":
+            raw_name = (text or "").strip()
+            if not raw_name:
+                prompt = i18n_t("auth_register_name", lang)
+                return JourneyReply(
+                    application_id=app.application_id,
+                    state=app.current_state,
+                    message=i18n_t("speech_no_response", lang, prompt=prompt),
+                    prompt=prompt,
+                    error="no_speech",
+                    data=self._auth_data(app),
+                )
+            if input_modality == "voice":
+                extracted = normalize_spoken_person_name(raw_name)
+                if extracted is None:
+                    return JourneyReply(
+                        application_id=app.application_id,
+                        state=app.current_state,
+                        message=i18n_t("auth_register_name", lang),
+                        prompt=i18n_t("auth_register_name", lang),
+                        error="registration_name_required",
+                        data=self._auth_data(app),
+                    )
+                name = extracted
+            else:
+                name = raw_name
+            if len(name) < 2 or name.isdigit() or normalize_spoken_otp(name):
+                return JourneyReply(
+                    application_id=app.application_id,
+                    state=app.current_state,
+                    message=i18n_t("auth_register_name", lang),
+                    prompt=i18n_t("auth_register_name", lang),
+                    error="registration_name_required",
+                    data=self._auth_data(app),
+                )
+            # Voice/IVR: confirm via existing FIELD_CONFIRMATION before creating the citizen.
+            if input_modality == "voice":
+                return self._begin_voice_field_confirmation(
+                    app,
+                    session,
+                    "register_name",
+                    name,
+                    trace_id=trace_id,
+                )
+            persona = self.identity.register_citizen(
+                name=name, mobile=app.pending_mobile or ""
+            )
+            self._persist_synthetic_citizen(persona)
+            return self._complete_authenticated(
+                app,
+                session,
+                persona,
+                lang=lang,
+                trace_id=trace_id,
+                message=i18n_t("auth_register_success", lang),
+            )
+
+        if step != "otp":
+            mobile = self._extract_auth_mobile(text)
             if not mobile:
                 app.auth_attempts += 1
                 self._audit(
@@ -604,135 +844,84 @@ class JourneyService:
                     message=i18n_t("auth_mobile_unrecognized", lang),
                     prompt=i18n_t("auth_mobile", lang),
                     error="unknown_mobile",
+                    data=self._auth_data(app),
                 )
-            challenge = self.identity.request_otp(mobile)
-            self._audit(
-                "AUTH_REQUESTED",
-                trace_id=trace_id,
-                metadata={
-                    "application_ref": app.application_id,
-                    "mobile_last4": mobile[-4:] if len(mobile) >= 4 else "****",
-                },
-            )
-            if not challenge:
-                app.auth_attempts += 1
-                self._audit(
-                    "AUTH_FAILED",
-                    trace_id=trace_id,
-                    metadata={
-                        "application_ref": app.application_id,
-                        "reason": "unknown_mobile",
-                        "attempts": app.auth_attempts,
-                    },
-                )
-                if app.auth_attempts >= MAX_AUTH_ATTEMPTS:
-                    self._transition(
-                        app, session, JourneyState.AUTH_FAILED, trace_id=trace_id
-                    )
-                    return JourneyReply(
-                        application_id=app.application_id,
-                        state=app.current_state,
-                        message="Authentication failed too many times.",
-                        prompt="Please try again, or say help to reach an officer.",
-                        error="auth_failed",
-                    )
-                return JourneyReply(
-                    application_id=app.application_id,
-                    state=app.current_state,
-                    message=i18n_t("auth_mobile_unrecognized", lang),
-                    prompt=i18n_t("auth_mobile", lang),
-                    error="unknown_mobile",
-                )
-            app.pending_mobile = challenge.mobile
+            app.pending_mobile = mobile
+            app.auth_attempts = 0
+            if self.identity.find_by_mobile(mobile):
+                return self._issue_otp_reply(app, lang=lang, trace_id=trace_id)
+            app.auth_step = "register_offer"
             return JourneyReply(
                 application_id=app.application_id,
                 state=app.current_state,
-                message="A one-time password has been sent (mock).",
-                prompt=i18n_t("auth_otp", lang),
+                message=i18n_t("auth_register_offer", lang),
+                prompt=i18n_t("auth_register_offer", lang),
+                data=self._auth_data(app),
             )
 
-        # Verify OTP — normalize spoken/typed digits; never audit the OTP value
-        lang = app.language or "en"
         otp = normalize_spoken_otp(text)
         if otp is None:
-            app.auth_attempts += 1
-            self._audit(
-                "AUTH_FAILED",
-                trace_id=trace_id,
-                metadata={
-                    "application_ref": app.application_id,
-                    "reason": "invalid_otp_format",
-                    "attempts": app.auth_attempts,
-                },
-            )
-            if app.auth_attempts >= MAX_AUTH_ATTEMPTS:
-                app.pending_mobile = None
-                self._transition(
-                    app, session, JourneyState.AUTH_FAILED, trace_id=trace_id
-                )
-                return JourneyReply(
-                    application_id=app.application_id,
-                    state=app.current_state,
-                    message="Authentication failed too many times.",
-                    prompt="Please try again, or say help to reach an officer.",
-                    error="auth_failed",
-                )
             return JourneyReply(
                 application_id=app.application_id,
                 state=app.current_state,
                 message=i18n_t("auth_otp_incorrect", lang),
                 prompt=i18n_t("auth_otp", lang),
                 error="invalid_otp",
+                data=self._auth_data(app, otp_issued=True),
             )
 
-        result = self.identity.verify_otp(app.pending_mobile, otp)
-        if not result.success or not result.persona:
-            app.auth_attempts += 1
+        result = self.identity.verify_otp(app.pending_mobile or "", otp)
+        if result.reason == "otp_expired":
+            return self._issue_otp_reply(
+                app,
+                lang=lang,
+                trace_id=trace_id,
+                message_key="auth_otp_expired",
+                error="otp_expired",
+            )
+        if result.reason == "otp_max_attempts":
+            return self._issue_otp_reply(
+                app,
+                lang=lang,
+                trace_id=trace_id,
+                message_key="auth_otp_max_attempts",
+                error="otp_max_attempts",
+            )
+        if not result.success:
             self._audit(
                 "AUTH_FAILED",
                 trace_id=trace_id,
                 metadata={
                     "application_ref": app.application_id,
                     "reason": result.reason or "invalid_otp",
-                    "attempts": app.auth_attempts,
                 },
             )
-            if app.auth_attempts >= MAX_AUTH_ATTEMPTS:
-                app.pending_mobile = None
-                self._transition(
-                    app, session, JourneyState.AUTH_FAILED, trace_id=trace_id
-                )
-                return JourneyReply(
-                    application_id=app.application_id,
-                    state=app.current_state,
-                    message="Authentication failed too many times.",
-                    prompt="Please try again, or say help to reach an officer.",
-                    error="auth_failed",
-                )
             return JourneyReply(
                 application_id=app.application_id,
                 state=app.current_state,
                 message=i18n_t("auth_otp_incorrect", lang),
                 prompt=i18n_t("auth_otp", lang),
                 error="invalid_otp",
+                data=self._auth_data(app, otp_issued=True),
             )
 
-        app.applicant_id = result.persona.id
-        app.pending_mobile = None
-        app.auth_attempts = 0
-        self._audit(
-            "AUTH_SUCCESS",
-            trace_id=trace_id,
-            actor_id=result.persona.id,
-            metadata={"application_ref": app.application_id, "persona_id": result.persona.id},
-        )
-        self._transition(app, session, JourneyState.CONSENT, trace_id=trace_id)
-        # Synthetic persona identity stays in seed config and audit actor_id only.
+        if result.persona:
+            return self._complete_authenticated(
+                app,
+                session,
+                result.persona,
+                lang=lang,
+                trace_id=trace_id,
+                message=i18n_t("auth_success", lang),
+            )
+
+        app.auth_step = "register_name"
         return JourneyReply(
             application_id=app.application_id,
             state=app.current_state,
-            message=i18n_t("auth_success", lang),
-            prompt=self.service.prompts.get("consent"),
+            message=i18n_t("auth_register_name", lang),
+            prompt=i18n_t("auth_register_name", lang),
+            data=self._auth_data(app),
         )
 
     def _on_auth_failed(
@@ -742,12 +931,14 @@ class JourneyService:
         if cmd == "RETRY":
             app.auth_attempts = 0
             app.pending_mobile = None
+            app.auth_step = "mobile"
             self._transition(app, session, JourneyState.AUTHENTICATE, trace_id=trace_id)
             return JourneyReply(
                 application_id=app.application_id,
                 state=app.current_state,
                 message="Try authentication again.",
-                prompt="Enter your registered mobile number.",
+                prompt=i18n_t("auth_mobile", app.language or "en"),
+                data=self._auth_data(app),
             )
         return JourneyReply(
             application_id=app.application_id,
@@ -857,6 +1048,18 @@ class JourneyService:
                 state=app.current_state,
                 message="Consent required before capturing data.",
                 error="consent_required",
+            )
+        field_name = app.correcting_field or self._next_missing_field(app)
+        lang = self._lang(app)
+        if input_modality == "voice" and not (text or "").strip() and field_name:
+            prompt = self._field_prompt(field_name, app)
+            return JourneyReply(
+                application_id=app.application_id,
+                state=app.current_state,
+                message=i18n_t("speech_no_response", lang, prompt=prompt),
+                prompt=prompt,
+                error="no_speech",
+                data={"field": field_name, "next_field": field_name},
             )
         if text.upper() == "CORRECT":
             self._transition(
@@ -973,6 +1176,19 @@ class JourneyService:
         if decision is True:
             value = proposed
             self._clear_pending_voice_confirmation(app)
+            if field_name == "register_name":
+                persona = self.identity.register_citizen(
+                    name=str(value), mobile=app.pending_mobile or ""
+                )
+                self._persist_synthetic_citizen(persona)
+                return self._complete_authenticated(
+                    app,
+                    session,
+                    persona,
+                    lang=lang,
+                    trace_id=trace_id,
+                    message=i18n_t("auth_register_success", lang),
+                )
             self._transition(
                 app,
                 session,
@@ -991,6 +1207,25 @@ class JourneyService:
 
         if decision is False:
             self._clear_pending_voice_confirmation(app)
+            if field_name == "register_name":
+                app.auth_step = "register_name"
+                self._transition(
+                    app,
+                    session,
+                    JourneyState.AUTHENTICATE,
+                    trace_id=trace_id,
+                    event_type="FIELD_CONFIRM_DECLINED",
+                    metadata={"field": field_name, "application_ref": app.application_id},
+                )
+                label = field_label_for_confirm(field_name, lang)
+                retry = i18n_t("field_confirm_retry", lang, field_label=label)
+                return JourneyReply(
+                    application_id=app.application_id,
+                    state=app.current_state,
+                    message=retry,
+                    prompt=i18n_t("auth_register_name", lang),
+                    data=self._auth_data(app),
+                )
             self._transition(
                 app,
                 session,
@@ -1016,6 +1251,23 @@ class JourneyService:
         # Not yes/no — treat as a new attempt for the same field. Never re-prompt
         # the rejected pending value (that caused stale "I heard: …" after retry).
         self._clear_pending_voice_confirmation(app)
+        if field_name == "register_name":
+            app.auth_step = "register_name"
+            self._transition(
+                app,
+                session,
+                JourneyState.AUTHENTICATE,
+                trace_id=trace_id,
+                event_type="FIELD_CONFIRM_REPLACED",
+                metadata={"field": field_name, "application_ref": app.application_id},
+            )
+            return self._on_authenticate(
+                app,
+                session,
+                text,
+                trace_id=trace_id,
+                input_modality=input_modality or "voice",
+            )
         self._transition(
             app,
             session,
@@ -1448,6 +1700,7 @@ class JourneyService:
         app.correction_notes = None
         receipt = generate_receipt(db=self.db, app=app, trace_id=trace_id)
         get_metrics().record_status(app.processing_status)
+        NotificationService(self.db).notify_submission(app)
         return JourneyReply(
             application_id=app.application_id,
             state=app.current_state,
@@ -1534,6 +1787,12 @@ class JourneyService:
                 "service_code": app.service_code,
                 "consent_granted": app.consent_granted,
                 "fields_captured": list((app.form_data or {}).keys()),
+                "auth_step": app.auth_step or (
+                    "otp" if app.pending_mobile and app.current_state == "AUTHENTICATE" else None
+                ),
+                "otp_issued": bool(
+                    app.auth_step == "otp" and app.pending_mobile
+                ),
                 "documents": [
                     {
                         "code": d.document_code,
@@ -1552,6 +1811,10 @@ class JourneyService:
                 "correction_notes": app.correction_notes,
                 "receipt_id": receipt.receipt_id if receipt else None,
                 "receipt": receipt.body_text if receipt else None,
+                "issued_certificate_available": any(
+                    d.document_code == ISSUED_CERTIFICATE_CODE for d in app.documents
+                )
+                and app.processing_status == "ISSUED",
             },
         )
 
@@ -1703,3 +1966,25 @@ class JourneyService:
                 "currency": receipt.currency,
             },
         )
+
+    def get_issued_certificate_bytes(
+        self, application_id: str, access_token: str
+    ) -> tuple[bytes, str]:
+        """Citizen download of the issued certificate. Session token required."""
+        from app.services.documents import get_document, read_stored_bytes
+        from app.services.state_machine import ProcessingStatus
+
+        app = self._get_app_by_ref(application_id)
+        self._get_session(app, access_token)
+        if app.processing_status != ProcessingStatus.ISSUED.value:
+            raise LookupError("Issued certificate not found")
+        record = get_document(self.db, app.id, ISSUED_CERTIFICATE_CODE)
+        if not record:
+            raise LookupError("Issued certificate not found")
+        try:
+            payload = read_stored_bytes(record.storage_key)
+        except FileNotFoundError as exc:
+            raise LookupError("Issued certificate not found") from exc
+        if not payload.startswith(b"%PDF"):
+            raise LookupError("Issued certificate not found")
+        return payload, record.original_filename

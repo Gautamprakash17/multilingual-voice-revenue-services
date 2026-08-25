@@ -13,6 +13,8 @@ from app.services.state_machine import JourneyState
 from app.speech.tts import MockTTSProvider
 from sqlalchemy.orm import Session
 
+from tests.auth_helpers import submit_current_otp
+
 
 @pytest.fixture
 def identity() -> MockIdentityProvider:
@@ -22,7 +24,6 @@ def identity() -> MockIdentityProvider:
                 id="persona-lakshmi",
                 name="Lakshmi Devi",
                 mobile="9876543210",
-                otp="123456",
             )
         ]
     )
@@ -44,7 +45,7 @@ def _auth_to_form(journey: JourneyService, *, lang: str = "en") -> tuple[str, st
     app_id = start.application_id
     journey.handle_message(app_id, token, lang, trace_id="voice-confirm")
     journey.handle_message(app_id, token, "9876543210", trace_id="voice-confirm")
-    journey.handle_message(app_id, token, "123456", trace_id="voice-confirm")
+    submit_current_otp(journey, app_id, token, trace="voice-confirm")
     journey.record_consent(app_id, token, granted=True, trace_id="voice-confirm")
     journey.handle_message(app_id, token, "INCOME_CERTIFICATE", trace_id="voice-confirm")
     return app_id, token

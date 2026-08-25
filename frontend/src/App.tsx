@@ -9,25 +9,36 @@ import WhatsAppSimulatorPage from "./pages/WhatsAppSimulatorPage";
 export default function App() {
   return (
     <div className="app-shell">
+      <a className="skip-link" href="#main-content">
+        Skip to content
+      </a>
       <header className="topbar">
         <div className="brand">
           <span className="brand-mark" aria-hidden="true">
-            RV
+            RS
           </span>
           <div>
-            <strong>Revenue Voice Services</strong>
-            <p>Multilingual Citizen Services</p>
+            <strong>Revenue Services</strong>
+            <p>Citizen digital services</p>
           </div>
         </div>
         <nav aria-label="Main">
-          <NavLink to="/" end>
-            Home
-          </NavLink>
-          <NavLink to="/journey">Apply</NavLink>
-          <NavLink to="/officer">Officer</NavLink>
-          <NavLink to="/whatsapp">WhatsApp</NavLink>
-          <NavLink to="/ivr">IVR</NavLink>
-          <NavLink to="/placeholders">Surfaces</NavLink>
+          <div className="nav-group" role="group" aria-label="Citizen">
+            <span className="nav-group-label">Citizen</span>
+            <NavLink to="/" end>
+              Home
+            </NavLink>
+            <NavLink to="/journey">Apply</NavLink>
+          </div>
+          <div className="nav-group" role="group" aria-label="Simulators">
+            <span className="nav-group-label">Simulators</span>
+            <NavLink to="/whatsapp">WhatsApp</NavLink>
+            <NavLink to="/ivr">IVR</NavLink>
+          </div>
+          <div className="nav-group" role="group" aria-label="Officer">
+            <span className="nav-group-label">Officer</span>
+            <NavLink to="/officer">Applications</NavLink>
+          </div>
         </nav>
       </header>
       <main id="main-content">
@@ -41,7 +52,7 @@ export default function App() {
         </Routes>
       </main>
       <footer>
-        Official-style POC · Data stays local · Voice and text citizen services
+        Demonstration portal · Data stays local · Not a live government filing system
       </footer>
     </div>
   );

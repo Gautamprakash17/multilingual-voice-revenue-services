@@ -44,6 +44,12 @@ describe("sessionHandoff", () => {
     expect(peekLatestHandoff()?.applicationId).toBe("INC-1001");
   });
 
+  it("looks up handoff case-insensitively by Application ID", () => {
+    storeSessionHandoff("inc-1001", "tok-abc");
+    expect(lookupSessionHandoff("INC-1001")).toBe("tok-abc");
+    expect(lookupSessionHandoff(" inc-1001 ")).toBe("tok-abc");
+  });
+
   it("returns null when application id is unknown", () => {
     storeSessionHandoff("INC-1001", "tok-abc");
     expect(lookupSessionHandoff("INC-9999")).toBeNull();

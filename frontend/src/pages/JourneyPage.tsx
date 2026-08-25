@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   encodePocVoice,
+  fetchCitizenCertificate,
   fetchLanguages,
   fetchServices,
   getJourney,
@@ -14,6 +15,7 @@ import {
   type LanguageConfig,
   type ServiceConfig,
 } from "../api/client";
+import PhoneSimulator from "../components/PhoneSimulator";
 import { INTERNAL_UI_ERRORS, JOURNEY_COMMANDS, acceptsCitizenComposer, showsFieldConfirmationActions, showsPaymentActions } from "../journey/actions";
 import {
   citizenFieldCaption,
@@ -33,87 +35,32 @@ import {
   documentLabel,
   fieldLabel,
   formatFee,
+  processingStatusBadgeClass,
+  processingStatusLabel,
   serviceDisplayName,
   stateLabel,
+  statusLifecycleSteps,
   verificationStatusLabel,
   VERIFICATION_POC_NOTE,
+  citizenServiceBlurb,
 } from "../journey/labels";
 import { ServiceAudioSession } from "../journey/serviceAudio";
+import {
+  recordingBlobToWavBase64,
+} from "../journey/voiceRecording";
+import {
+  authStepFromReply,
+  otpIssuedFromReply,
+  otpErrorCopy,
+  shouldShowPhoneSimulator,
+} from "../journey/phoneSimulator";
+import {
+  certificateDemoDisclaimer,
+  certificateIssuedTitle,
+  certificateReadyCopy,
+} from "../officer/certificate";
 
 type ChatItem = { role: "bot" | "user" | "system"; text: string };
-
-function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const result = reader.result;
-      if (typeof result !== "string") {
-        reject(new Error("Could not read audio"));
-        return;
-      }
-      const comma = result.indexOf(",");
-      resolve(comma >= 0 ? result.slice(comma + 1) : result);
-    };
-    reader.onerror = () => reject(new Error("Could not read audio"));
-    reader.readAsDataURL(blob);
-  });
-}
-
-const WHISPER_SAMPLE_RATE = 16000;
-
-function writeAscii(view: DataView, offset: number, text: string) {
-  for (let i = 0; i < text.length; i++) {
-    view.setUint8(offset + i, text.charCodeAt(i));
-  }
-}
-
-function encodeWavPcm16(samples: Float32Array, sampleRate: number): Blob {
-  const bytesPerSample = 2;
-  const blockAlign = bytesPerSample;
-  const dataSize = samples.length * bytesPerSample;
-  const buffer = new ArrayBuffer(44 + dataSize);
-  const view = new DataView(buffer);
-  writeAscii(view, 0, "RIFF");
-  view.setUint32(4, 36 + dataSize, true);
-  writeAscii(view, 8, "WAVE");
-  writeAscii(view, 12, "fmt ");
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * blockAlign, true);
-  view.setUint16(32, blockAlign, true);
-  view.setUint16(34, 16, true);
-  writeAscii(view, 36, "data");
-  view.setUint32(40, dataSize, true);
-  let offset = 44;
-  for (let i = 0; i < samples.length; i++) {
-    const sample = Math.max(-1, Math.min(1, samples[i]));
-    view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
-    offset += 2;
-  }
-  return new Blob([buffer], { type: "audio/wav" });
-}
-
-/** Decode browser MediaRecorder output and resample to 16 kHz mono WAV for local STT. */
-async function recordingBlobToWavBase64(blob: Blob): Promise<string> {
-  const arrayBuffer = await blob.arrayBuffer();
-  const decodeCtx = new AudioContext();
-  try {
-    const decoded = await decodeCtx.decodeAudioData(arrayBuffer.slice(0));
-    const frames = Math.max(1, Math.ceil(decoded.duration * WHISPER_SAMPLE_RATE));
-    const offline = new OfflineAudioContext(1, frames, WHISPER_SAMPLE_RATE);
-    const source = offline.createBufferSource();
-    source.buffer = decoded;
-    source.connect(offline.destination);
-    source.start(0);
-    const rendered = await offline.startRendering();
-    const wavBlob = encodeWavPcm16(rendered.getChannelData(0), WHISPER_SAMPLE_RATE);
-    return blobToBase64(wavBlob);
-  } finally {
-    void decodeCtx.close();
-  }
-}
 
 type ServiceAudioState = "idle" | "playing" | "blocked";
 
@@ -213,6 +160,14 @@ export default function JourneyPage() {
   const [formCursorField, setFormCursorField] = useState<string | null>(null);
   const [capturedFormData, setCapturedFormData] = useState<Record<string, unknown>>({});
   const chatEndRef = useRef<HTMLDivElement | null>(null);
+
+  const authStep = authStepFromReply(last?.data);
+  const otpIssued = otpIssuedFromReply(last?.data);
+  const showPhoneSim = shouldShowPhoneSimulator({
+    state,
+    authStep,
+    otpIssued,
+  });
 
   const isListening = voicePhase === "listening";
   const isVoiceProcessing = voicePhase === "processing";
@@ -449,6 +404,22 @@ export default function JourneyPage() {
         ...prev,
         { role: "system", text: `Receipt:\n${reply.data?.receipt as string}` },
       ]);
+    }
+    if (reply.error === "invalid_otp") {
+      setError(reply.message || otpErrorCopy("invalid_otp"));
+    } else if (reply.error === "otp_expired") {
+      setError(reply.message || otpErrorCopy("otp_expired"));
+    } else if (reply.error === "otp_max_attempts") {
+      setError(reply.message || "Too many incorrect attempts. A new OTP has been sent.");
+    } else if (
+      reply.error !== "unknown_mobile" &&
+      reply.error !== "validation_failed" &&
+      reply.error !== "stt_unrecognized"
+    ) {
+      // Keep prior alerts only for auth OTP failures; clear when the step succeeds.
+      if (!reply.error && (reply.data?.auth_step === "otp" || reply.state === "CONSENT")) {
+        setError(null);
+      }
     }
     if (opts?.playAudio !== false && reply.audio_b64) {
       playServiceAudio(reply.audio_b64, reply.audio_mime);
@@ -768,6 +739,12 @@ export default function JourneyPage() {
           reply.message ||
             "I couldn't recognise that mobile number. Please say the 10-digit number clearly and try again.",
         );
+      } else if (reply.error === "invalid_otp") {
+        setError(reply.message || otpErrorCopy("invalid_otp"));
+      } else if (reply.error === "otp_expired") {
+        setError(reply.message || otpErrorCopy("otp_expired"));
+      } else if (reply.error === "otp_max_attempts") {
+        setError(reply.message || "Too many incorrect attempts. A new OTP has been sent.");
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Voice failed");
@@ -955,21 +932,32 @@ export default function JourneyPage() {
       <div className="journey-hero">
         <div className="journey-header">
           <div>
-            <h1>Apply for an Income Certificate</h1>
+            <p className="eyebrow">Citizen application</p>
+            <h1>Apply</h1>
             <p className="lede">
               Complete your application by voice or text. You can speak in English, हिन्दी, or
               ಕನ್ನಡ.
             </p>
           </div>
           {(applicationId || (state && state !== "—")) && (
-            <div className="journey-meta" aria-live="polite">
+            <div className="journey-meta journey-meta-premium" aria-live="polite">
               <div>
-                <span className="label">Application ID</span>
-                <strong>{applicationId ?? "Not started"}</strong>
+                <span className="label">Application</span>
+                <strong className="app-ref">{applicationId ?? "Not started"}</strong>
               </div>
               <div>
-                <span className="label">Step</span>
-                <strong className="state-pill">{stateLabel(state)}</strong>
+                <span className="label">Status</span>
+                <strong
+                  className={
+                    typeof last?.data?.processing_status === "string"
+                      ? processingStatusBadgeClass(String(last.data.processing_status))
+                      : "state-pill"
+                  }
+                >
+                  {typeof last?.data?.processing_status === "string"
+                    ? processingStatusLabel(String(last.data.processing_status))
+                    : stateLabel(state)}
+                </strong>
               </div>
               <div>
                 <span className="label">Language</span>
@@ -981,32 +969,38 @@ export default function JourneyPage() {
 
         <div className="journey-start-card">
           <div className="journey-start-copy">
-            <h2 style={{ margin: 0 }}>Start the application</h2>
+            <h2 style={{ margin: 0 }}>
+              {applicationId ? "Continue your application" : "Start the application"}
+            </h2>
             <p>
-              Start to hear the welcome message. After that, the service guides you step by
-              step — you do not need to type the first question.
+              {applicationId
+                ? "Speak or type to answer the next question. Refresh status if an officer has updated your application."
+                : "Start to hear the welcome message. After that, the service guides you step by step — you do not need to type the first question."}
             </p>
           </div>
           <div className="journey-actions" style={{ margin: 0 }}>
-            <button
-              type="button"
-              className="btn-primary-lg"
-              onClick={() => void onStart()}
-              disabled={busy}
-            >
-              Start application
-            </button>
-            <button
-              type="button"
-              className="ghost"
-              disabled={busy || !applicationId || !token}
-              onClick={() => {
-                if (!applicationId || !token) return;
-                void getJourney(applicationId, token).then(pushBot);
-              }}
-            >
-              Refresh status
-            </button>
+            {!applicationId ? (
+              <button
+                type="button"
+                className="btn-primary-lg"
+                onClick={() => void onStart()}
+                disabled={busy}
+              >
+                Start application
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="ghost"
+                disabled={busy || !token}
+                onClick={() => {
+                  if (!applicationId || !token) return;
+                  void getJourney(applicationId, token).then(pushBot);
+                }}
+              >
+                Refresh status
+              </button>
+            )}
             {applicationId && token && (
               <button
                 type="button"
@@ -1049,28 +1043,67 @@ export default function JourneyPage() {
           {error}
         </div>
       )}
-      {(voiceNote || isServicePlaying) && (
+
+      {applicationId && token && (
+        <PhoneSimulator
+          applicationId={applicationId}
+          token={token}
+          otpActive={showPhoneSim}
+          onViewCertificate={() => {
+            void fetchCitizenCertificate(applicationId, token, { download: false })
+              .then((blob) => {
+                const url = URL.createObjectURL(blob);
+                window.open(url, "_blank", "noopener,noreferrer");
+                window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+              })
+              .catch((err: unknown) => {
+                setError(
+                  err instanceof Error ? err.message : "Certificate is not available yet.",
+                );
+              });
+          }}
+          onContinueApplication={() => {
+            document.querySelector(".composer")?.scrollIntoView({ behavior: "smooth" });
+          }}
+        />
+      )}
+      {(isListening || isVoiceProcessing || voiceNote || isServicePlaying) && (
         <p
-          className={`meta voice-status${isListening ? " voice-status-listening" : isVoiceProcessing ? " voice-status-processing" : isServicePlaying ? " voice-status-playing" : ""}`}
+          className={`voice-status-panel${isListening ? " voice-status-listening" : isVoiceProcessing ? " voice-status-processing" : isServicePlaying ? " voice-status-playing" : ""}`}
           role="status"
         >
-          {isListening && (
-            <span className="voice-recording-indicator" aria-hidden="true">
-              <span className="voice-recording-dot" />
-              <span className="voice-recording-pulse" />
-            </span>
-          )}
-          {isServicePlaying && !isListening && !isVoiceProcessing
-            ? "Voice: Playing…"
-            : voiceNote
-              ? <>Voice: <em>{voiceNote}</em></>
-              : null}
+          {isListening ? (
+            <>
+              <svg className="voice-mic-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  fill="currentColor"
+                  d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3Zm7-3a1 1 0 1 0-2 0 5 5 0 0 1-10 0 1 1 0 1 0-2 0 7 7 0 0 0 6 6.92V20H8a1 1 0 1 0 0 2h8a1 1 0 1 0 0-2h-3v-2.08A7 7 0 0 0 19 11Z"
+                />
+              </svg>
+              <span className="voice-recording-indicator" aria-hidden="true">
+                <span className="voice-recording-dot" />
+              </span>
+            </>
+          ) : null}
+          <strong>
+            {isListening
+              ? "Listening…"
+              : isVoiceProcessing
+                ? "Processing…"
+                : isServicePlaying
+                  ? "Playing…"
+                  : "Idle"}
+          </strong>
+          {voiceNote && !isListening && !isVoiceProcessing ? <span>{voiceNote}</span> : null}
         </p>
       )}
       {transcript && (
-        <p className="meta">
-          Last voice transcript: <em>{transcript}</em>
-        </p>
+        <details className="dev-details">
+          <summary>Last spoken reply</summary>
+          <p className="meta">
+            I heard: <em>{transcript}</em>
+          </p>
+        </details>
       )}
 
       {(serviceAudioState === "playing" || serviceAudioState === "blocked" || serviceAudio) && (
@@ -1098,33 +1131,86 @@ export default function JourneyPage() {
         </div>
       )}
 
-      <div className="conversation-panel">
+      <div className="conversation-panel conversation-panel-premium">
         <h2>Conversation</h2>
-        <div className="chat-log" role="log" aria-live="polite" aria-relevant="additions">
+        <div
+          className={`chat-log${chat.length === 0 ? " chat-log-empty" : ""}`}
+          role="log"
+          aria-live="polite"
+          aria-relevant="additions"
+        >
           {chat.length === 0 && (
-            <div className="bubble system">
-              Press <strong>Start application</strong> to hear the welcome prompt, then use{" "}
-              <strong>Speak</strong> to reply by voice. You can also type as a fallback. The
-              service speaks each next step — no need to type the question.
+            <div className="conversation-start" role="status">
+              <div className="conversation-start-icon" aria-hidden="true">
+                RS
+              </div>
+              <p className="conversation-empty-title">Revenue Services</p>
+              <p className="conversation-start-lead">
+                Let&apos;s get your application started.
+              </p>
+              <p className="muted">
+                Choose your language above, then press <strong>Start application</strong>. The
+                service will guide you by voice — use <strong>Speak</strong> or type as a fallback.
+              </p>
             </div>
           )}
           {chat.map((item, idx) => {
             const isLatestBot =
               item.role === "bot" && idx === chat.map((c) => c.role).lastIndexOf("bot");
+            const avatarLabel =
+              item.role === "user" ? "You" : item.role === "bot" ? "RS" : "!";
             return (
               <div
                 key={`${item.role}-${idx}`}
-                className={`bubble ${item.role}${isLatestBot ? " latest-prompt" : ""}`}
+                className={`chat-row chat-row-${item.role}${isLatestBot ? " latest-prompt" : ""}`}
               >
-                <span className="bubble-role">
-                  {item.role === "user" ? "You" : item.role === "bot" ? "Service" : "Notice"}
+                <span className="chat-avatar" aria-hidden="true">
+                  {avatarLabel}
                 </span>
-                {item.text}
+                <div className={`bubble ${item.role}${isLatestBot ? " latest-prompt" : ""}`}>
+                  <span className="bubble-role">
+                    {item.role === "user"
+                      ? "You"
+                      : item.role === "bot"
+                        ? "Revenue Services"
+                        : "Notice"}
+                  </span>
+                  {item.text}
+                </div>
               </div>
             );
           })}
           <div ref={chatEndRef} />
         </div>
+
+        {state === "AUTHENTICATE" && authStep === "register_offer" && (
+          <div className="action-bar consent-bar" role="group" aria-label="Register">
+            <p className="action-bar-lead">
+              We couldn&apos;t find an existing account for this mobile number. Would you like to
+              register?
+            </p>
+            <div className="action-bar-buttons">
+              <button
+                type="button"
+                className="btn-success"
+                onClick={() => void sendJourneyText("Register", JOURNEY_COMMANDS.register)}
+                disabled={busy}
+              >
+                Register
+              </button>
+              <button
+                type="button"
+                className="ghost"
+                onClick={() =>
+                  void sendJourneyText("Use another number", JOURNEY_COMMANDS.anotherNumber)
+                }
+                disabled={busy}
+              >
+                Use another number
+              </button>
+            </div>
+          </div>
+        )}
 
         {state === "CONSENT" && (
           <div className="action-bar consent-bar" role="group" aria-label="Consent">
@@ -1159,6 +1245,11 @@ export default function JourneyPage() {
             aria-label="Confirm captured value"
           >
             <p className="action-bar-lead">Please confirm what the service heard.</p>
+            {transcript ? (
+              <p className="heard-value">
+                I heard: <em>{transcript}</em>
+              </p>
+            ) : null}
             <div className="action-bar-buttons">
               <button
                 type="button"
@@ -1194,7 +1285,7 @@ export default function JourneyPage() {
                   <article key={service.code} className="service-card">
                     <h3 className="service-card-title">{service.display_name}</h3>
                     {service.description && (
-                      <p className="service-card-desc">{service.description.trim()}</p>
+                      <p className="service-card-desc">{citizenServiceBlurb(service.description)}</p>
                     )}
                     <button
                       type="button"
@@ -1657,11 +1748,15 @@ export default function JourneyPage() {
                     )}
                     {needed && (
                       <>
-                        <label htmlFor={`doc-file-${doc.code}`}>
-                          Choose document
+                        <label className="file-picker" htmlFor={`doc-file-${doc.code}`}>
+                          Choose file
+                          <span className="btn btn-secondary file-picker-btn" aria-hidden="true">
+                            {pending ? "Change file" : "Browse"}
+                          </span>
                           <input
                             id={`doc-file-${doc.code}`}
                             type="file"
+                            className="visually-hidden"
                             accept={acceptAttr || ".pdf,.png,.jpg,.jpeg"}
                             disabled={busy}
                             onChange={(e) => {
@@ -1715,19 +1810,25 @@ export default function JourneyPage() {
             )}
             <h3>Application submitted successfully</h3>
             <p>
-              Your Income Certificate application has been submitted. It is with the revenue
-              office for review. Keep your application ID for follow-up.
+              Your {serviceDisplayName(activeService?.code, services)} application has been
+              submitted. Keep your application ID for follow-up.
             </p>
             <div className="submitted-meta">
               <div>
-                <span className="label">Application ID</span>
-                <strong>{applicationId}</strong>
+                <span className="label">Application</span>
+                <strong className="app-ref">{applicationId}</strong>
               </div>
               <div>
                 <span className="label">Status</span>
-                <strong className="badge badge-success">
+                <strong
+                  className={
+                    typeof last?.data?.processing_status === "string"
+                      ? processingStatusBadgeClass(String(last.data.processing_status))
+                      : "badge badge-success"
+                  }
+                >
                   {typeof last?.data?.processing_status === "string"
-                    ? String(last.data.processing_status)
+                    ? processingStatusLabel(String(last.data.processing_status))
                     : stateLabel(state)}
                 </strong>
               </div>
@@ -1736,11 +1837,94 @@ export default function JourneyPage() {
                 <strong>Use Refresh status to check progress</strong>
               </div>
             </div>
+            {(() => {
+              const track =
+                typeof last?.data?.processing_status === "string"
+                  ? statusLifecycleSteps(String(last.data.processing_status))
+                  : [];
+              return track.length > 0 ? (
+                <ol className="status-track status-track-v" aria-label="Application status">
+                  {track.map((step) => (
+                    <li
+                      key={step.id}
+                      className={`status-track-step ${step.phase} status-${step.id.toLowerCase()}`}
+                      data-status={step.id}
+                    >
+                      <span className="status-track-marker" aria-hidden="true" />
+                      <span>{step.label}</span>
+                    </li>
+                  ))}
+                </ol>
+              ) : null;
+            })()}
             {typeof last?.data?.receipt === "string" && (
-              <pre className="code-block" style={{ marginTop: "0.75rem" }}>
-                {last.data.receipt as string}
-              </pre>
+              <details className="dev-details">
+                <summary>Payment receipt</summary>
+                <pre className="code-block" style={{ marginTop: "0.75rem" }}>
+                  {last.data.receipt as string}
+                </pre>
+              </details>
             )}
+            {(last?.data?.processing_status === "ISSUED" ||
+              last?.data?.issued_certificate_available === true) &&
+              applicationId &&
+              token && (
+                <div className="certificate-ready">
+                  <h4>{certificateIssuedTitle()}</h4>
+                  <p>
+                    {certificateReadyCopy(serviceDisplayName(activeService?.code, services))}
+                  </p>
+                  <p className="demo-badge">{certificateDemoDisclaimer()}</p>
+                  <div className="officer-actions">
+                    <button
+                      type="button"
+                      className="ghost"
+                      disabled={busy}
+                      onClick={() => {
+                        void fetchCitizenCertificate(applicationId, token, { download: false })
+                          .then((blob) => {
+                            const url = URL.createObjectURL(blob);
+                            window.open(url, "_blank", "noopener,noreferrer");
+                            window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+                          })
+                          .catch((err: unknown) => {
+                            setError(
+                              err instanceof Error
+                                ? err.message
+                                : "Certificate is not available yet.",
+                            );
+                          });
+                      }}
+                    >
+                      View Certificate
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => {
+                        void fetchCitizenCertificate(applicationId, token, { download: true })
+                          .then((blob) => {
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement("a");
+                            a.href = url;
+                            a.download = `income-certificate-${applicationId}.pdf`;
+                            a.click();
+                            window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+                          })
+                          .catch((err: unknown) => {
+                            setError(
+                              err instanceof Error
+                                ? err.message
+                                : "Certificate is not available yet.",
+                            );
+                          });
+                      }}
+                    >
+                      Download Certificate
+                    </button>
+                  </div>
+                </div>
+              )}
           </div>
         )}
 

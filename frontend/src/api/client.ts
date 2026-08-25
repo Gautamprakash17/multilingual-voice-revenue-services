@@ -126,6 +126,65 @@ export async function fetchReady(): Promise<{
   return { ok: res.ok, data };
 }
 
+export type DemoSmsResponse = {
+  active: boolean;
+  from?: string;
+  label?: string;
+  code?: string;
+  issued_at?: string;
+  mobile_last4?: string;
+};
+
+export async function fetchDemoSms(
+  applicationId: string,
+  token: string,
+): Promise<DemoSmsResponse> {
+  const res = await fetch(
+    `${API_BASE}/api/v1/demo/sms?application_id=${encodeURIComponent(applicationId)}`,
+    { headers: { "X-Session-Token": token } },
+  );
+  if (!res.ok) {
+    throw new Error(`Demo SMS lookup failed (${res.status})`);
+  }
+  return res.json() as Promise<DemoSmsResponse>;
+}
+
+export type CitizenNotification = {
+  id: string;
+  application_id: string;
+  event_type: string;
+  message: string;
+  subject?: string | null;
+  channels: string[];
+  delivery_status: string;
+  created_at: string | null;
+  language?: string | null;
+  recipient_mobile_last4?: string | null;
+  has_email?: boolean;
+  certificate_available?: boolean;
+  continue_available?: boolean;
+  simulated?: boolean;
+};
+
+export type CitizenNotificationsResponse = {
+  simulated: boolean;
+  notifications: CitizenNotification[];
+};
+
+export async function fetchCitizenNotifications(
+  applicationId: string,
+  token: string,
+): Promise<CitizenNotificationsResponse> {
+  const res = await fetch(
+    `${API_BASE}/api/v1/demo/notifications?application_id=${encodeURIComponent(applicationId)}`,
+    { headers: { "X-Session-Token": token } },
+  );
+  if (!res.ok) {
+    throw new Error(`Notification inbox failed (${res.status})`);
+  }
+  return res.json() as Promise<CitizenNotificationsResponse>;
+}
+
 export async function startJourney(): Promise<JourneyResponse> {
   const res = await fetch(`${API_BASE}/api/v1/journey/start`, {
     method: "POST",
@@ -280,6 +339,15 @@ export type OfficerApplication = {
   documents: Array<Record<string, unknown>>;
   fields_present: string[];
   created_at?: string | null;
+  channel?: string | null;
+  issued_certificate?: {
+    code?: string;
+    available?: boolean;
+    filename?: string | null;
+    mime_type?: string | null;
+    size_bytes?: number | null;
+    issued_at?: string | null;
+  } | null;
 };
 
 export type OfficerHistoryItem = {
@@ -359,6 +427,38 @@ export async function officerAction(
     throw new Error(payload.error?.message || `Officer action failed (${res.status})`);
   }
   return res.json() as Promise<OfficerApplication>;
+}
+
+export async function fetchOfficerCertificate(
+  officerToken: string,
+  applicationId: string,
+  opts?: { download?: boolean },
+): Promise<Blob> {
+  const query = opts?.download ? "?download=1" : "";
+  const res = await fetch(
+    `${API_BASE}/api/v1/officer/${encodeURIComponent(applicationId)}/documents/ISSUED_CERTIFICATE${query}`,
+    { headers: { "X-Officer-Token": officerToken } },
+  );
+  if (!res.ok) {
+    throw new Error(`Certificate could not be loaded (${res.status})`);
+  }
+  return res.blob();
+}
+
+export async function fetchCitizenCertificate(
+  applicationId: string,
+  sessionToken: string,
+  opts?: { download?: boolean },
+): Promise<Blob> {
+  const query = opts?.download ? "?download=1" : "";
+  const res = await fetch(
+    `${API_BASE}/api/v1/journey/${encodeURIComponent(applicationId)}/documents/ISSUED_CERTIFICATE${query}`,
+    { headers: { "X-Session-Token": sessionToken } },
+  );
+  if (!res.ok) {
+    throw new Error(`Certificate could not be loaded (${res.status})`);
+  }
+  return res.blob();
 }
 
 /** Encode a POC voice marker understood by MockSTTProvider. */

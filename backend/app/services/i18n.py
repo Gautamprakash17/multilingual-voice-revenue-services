@@ -16,15 +16,29 @@ REQUIRED_KEYS = (
     "language_unsupported",
     "language_ambiguous",
     "auth_mobile",
+    "auth_mobile_ivr",
     "auth_mobile_unrecognized",
+    "auth_mobile_unrecognized_ivr",
     "auth_otp",
+    "auth_otp_ivr",
     "auth_otp_incorrect",
+    "auth_otp_sent",
+    "auth_otp_expired",
+    "auth_otp_max_attempts",
+    "auth_register_offer",
+    "auth_register_offer_ivr",
+    "auth_register_offer_retry_ivr",
+    "auth_register_name",
+    "auth_register_success",
     "auth_success",
     "consent",
+    "consent_ivr",
     "consent_recorded",
     "consent_declined",
     "consent_unclear",
+    "consent_unclear_ivr",
     "service_select",
+    "service_select_ivr_single",
     "service_select_unknown",
     "service_select_ambiguous",
     "field_applicant_name",
@@ -50,9 +64,13 @@ REQUIRED_KEYS = (
     "document_type_required",
     "document_type_unsupported",
     "review_intro",
+    "review_intro_ivr",
     "fee_quote",
+    "fee_quote_ivr",
     "payment_prompt",
+    "payment_prompt_ivr",
     "payment_failed",
+    "payment_failed_ivr",
     "correction_which",
     "correction_updating",
     "submitted",
@@ -60,8 +78,11 @@ REQUIRED_KEYS = (
     "validation_failed",
     "validation_mobile_invalid",
     "field_confirm_heard",
+    "field_confirm_heard_ivr",
     "field_confirm_retry",
+    "speech_no_response",
     "field_label_applicant_name",
+    "field_label_register_name",
     "field_label_date_of_birth",
     "field_label_mobile_number",
     "field_label_address",
@@ -73,6 +94,18 @@ REQUIRED_KEYS = (
     "welcome",
     "unknown_intent",
     "error_generic",
+    "notification_submitted",
+    "notification_under_review",
+    "notification_needs_correction",
+    "notification_issued",
+    "notification_rejected",
+    "notification_email_subject_submitted",
+    "notification_email_subject_under_review",
+    "notification_email_subject_needs_correction",
+    "notification_email_subject_issued",
+    "notification_email_subject_rejected",
+    "notification_sender",
+    "notification_simulated_label",
 )
 
 FIELD_KEY_MAP = {
@@ -87,6 +120,7 @@ FIELD_KEY_MAP = {
 
 FIELD_LABEL_KEY_MAP = {
     "applicant_name": "field_label_applicant_name",
+    "register_name": "field_label_register_name",
     "date_of_birth": "field_label_date_of_birth",
     "mobile_number": "field_label_mobile_number",
     "address": "field_label_address",
@@ -137,6 +171,31 @@ def language_select_prompt(language: str = "en") -> str:
     """Localized language-selection prompt with names from the language catalog."""
     catalog = get_language_catalog()
     return t("language_select", language, language_list=catalog.format_language_list())
+
+
+def language_select_ivr_prompt() -> str:
+    """Telephone-menu language choices built from the configured language catalog."""
+    catalog = get_language_catalog()
+    return " ".join(
+        f"Press {index} for {lang.display_name}."
+        for index, lang in enumerate(catalog.languages, start=1)
+    )
+
+
+def service_select_ivr_prompt(language: str = "en") -> str:
+    """Telephone-menu service choices built from the service catalogue (not hardcoded)."""
+    from app.services.catalogue import get_service_catalogue
+
+    items = sorted(get_service_catalogue().items(), key=lambda item: item[0])
+    if not items:
+        return t("service_select", language)
+    if len(items) == 1:
+        name = items[0][1].display_name
+        return t("service_select_ivr_single", language, service_name=name)
+    return " ".join(
+        f"Press {index} for {defn.display_name}."
+        for index, (_code, defn) in enumerate(items, start=1)
+    )
 
 
 def field_prompt(field_name: str, language: str = "en") -> str:

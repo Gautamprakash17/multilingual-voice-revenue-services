@@ -11,6 +11,8 @@ export const JOURNEY_COMMANDS = {
   paymentFail: "FAIL",
   paymentTimeout: "TIMEOUT",
   retry: "RETRY",
+  register: "REGISTER",
+  anotherNumber: "ANOTHER",
 } as const;
 
 export type JourneyCommand = (typeof JOURNEY_COMMANDS)[keyof typeof JOURNEY_COMMANDS];
@@ -22,6 +24,8 @@ export const INTERNAL_UI_ERRORS = new Set([
   "language_ambiguous",
   "unknown_mobile",
   "invalid_otp",
+  "otp_expired",
+  "otp_max_attempts",
   "reply_CONFIRM_or_CORRECT",
   "reply_PAY_or_CORRECT",
   "unknown_service",

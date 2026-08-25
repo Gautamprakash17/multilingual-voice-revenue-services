@@ -16,6 +16,8 @@ from app.speech.stt import MockSTTProvider
 from app.speech.tts import MockTTSProvider
 from sqlalchemy.orm import Session
 
+from tests.auth_helpers import expand_step
+
 DATE_FIELD = FieldDef(
     name="date_of_birth",
     type="date",
@@ -28,7 +30,7 @@ DATE_FIELD = FieldDef(
 @pytest.fixture
 def identity() -> MockIdentityProvider:
     return MockIdentityProvider(
-        [Persona(id="persona-lakshmi", name="Lakshmi Devi", mobile="9876543210", otp="123456")]
+        [Persona(id="persona-lakshmi", name="Lakshmi Devi", mobile="9876543210")]
     )
 
 
@@ -106,7 +108,9 @@ def test_text_modality_accepts_compact_dob(db_session, journey):
     app_id, token = start.application_id, start.access_token
     assert token
     for step in ["en", "9876543210", "123456"]:
-        journey.handle_message(app_id, token, step, trace_id="dob-text")
+        journey.handle_message(
+            app_id, token, expand_step(journey.identity, step), trace_id="dob-text"
+        )
     journey.record_consent(app_id, token, granted=True, trace_id="dob-text")
     journey.handle_message(app_id, token, "INCOME_CERTIFICATE", trace_id="dob-text")
     journey.handle_message(app_id, token, "Lakshmi Devi", trace_id="dob-text")
@@ -135,7 +139,7 @@ def test_voice_confirmation_shows_natural_date(orch: ChannelOrchestrator):
         )
 
     for step in ["en", "9876543210", "123456", "yes", "Income Certificate", "Lakshmi Devi"]:
-        voice(step)
+        voice(expand_step(orch.journey.identity, step))
         if step == "Lakshmi Devi":
             voice("yes")
     confirm = voice("27121996")

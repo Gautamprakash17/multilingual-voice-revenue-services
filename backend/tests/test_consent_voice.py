@@ -14,6 +14,8 @@ from app.speech.stt import MockSTTProvider
 from app.speech.tts import MockTTSProvider
 from sqlalchemy.orm import Session
 
+from tests.auth_helpers import expand_step
+
 
 @pytest.fixture
 def identity() -> MockIdentityProvider:
@@ -23,7 +25,6 @@ def identity() -> MockIdentityProvider:
                 id="persona-lakshmi",
                 name="Lakshmi Devi",
                 mobile="9876543210",
-                otp="123456",
             )
         ]
     )
@@ -81,7 +82,7 @@ def _auth_to_consent(orch: ChannelOrchestrator) -> tuple[str, str]:
             "session_ref": token,
             "modality": "voice",
             "language": "en",
-            "transcript": "1 2 3 4 5 6",
+            "transcript": expand_step(orch.journey.identity, "123456"),
         },
     )
     assert otp.state == JourneyState.CONSENT.value

@@ -14,7 +14,20 @@ from app.models.application import Application, ConversationSession
 from app.models.audit import AuditEvent
 from app.platform.audit import write_audit_event
 from app.platform.metrics import get_metrics
+from app.services.application_ids import normalize_application_id
 from app.services.catalogue import get_service
+from app.services.certificate import (
+    CertificateGenerationError,
+    certificate_filename,
+    render_income_certificate_pdf,
+)
+from app.services.documents import (
+    ISSUED_CERTIFICATE_CODE,
+    get_document,
+    read_stored_bytes,
+    store_issued_certificate,
+)
+from app.services.notifications import ISSUED, NEEDS_CORRECTION, REJECTED, NotificationService
 from app.services.state_machine import JourneyState, ProcessingStatus, assert_transition
 
 
@@ -41,6 +54,8 @@ class OfficerView:
     fields_present: list[str]
     # Safe metadata only — no storage paths, no raw restricted field values by default
     created_at: str | None
+    channel: str | None = None
+    issued_certificate: dict[str, Any] | None = None
 
 
 @dataclass
@@ -97,11 +112,8 @@ class OfficerService:
         )
 
     def _get_app(self, application_id: str) -> Application:
-        app = (
-            self.db.query(Application)
-            .filter(Application.application_id == application_id)
-            .one_or_none()
-        )
+        ref = normalize_application_id(application_id)
+        app = self.db.query(Application).filter(Application.application_id == ref).one_or_none()
         if not app:
             raise LookupError("Application not found")
         return app
@@ -114,7 +126,21 @@ class OfficerService:
             .first()
         )
 
+    def _issued_certificate_meta(self, app: Application) -> dict[str, Any] | None:
+        record = get_document(self.db, app.id, ISSUED_CERTIFICATE_CODE)
+        if not record:
+            return None
+        return {
+            "code": ISSUED_CERTIFICATE_CODE,
+            "available": True,
+            "filename": record.original_filename,
+            "mime_type": record.mime_type,
+            "size_bytes": record.size_bytes,
+            "issued_at": record.created_at.isoformat() if record.created_at else None,
+        }
+
     def _view(self, app: Application) -> OfficerView:
+        session = self._session(app)
         return OfficerView(
             application_id=app.application_id,
             service_code=app.service_code,
@@ -137,6 +163,9 @@ class OfficerService:
             ],
             fields_present=list((app.form_data or {}).keys()),
             created_at=app.created_at.isoformat() if app.created_at else None,
+            # Latest session channel is display metadata only — never a queue filter.
+            channel=session.channel if session else None,
+            issued_certificate=self._issued_certificate_meta(app),
         )
 
     def list_queue(self) -> list[OfficerView]:
@@ -210,8 +239,46 @@ class OfficerService:
                 break
         return items
 
+    def _persist_issued_certificate(self, app: Application) -> None:
+        """Generate and store the issued PDF. Must run before status becomes ISSUED."""
+        previous = app.processing_status
+        app.processing_status = ProcessingStatus.ISSUED.value
+        try:
+            pdf_bytes = render_income_certificate_pdf(app)
+            store_issued_certificate(
+                self.db,
+                app,
+                pdf_bytes,
+                filename=certificate_filename(app.application_id),
+            )
+        except (CertificateGenerationError, ValueError, OSError) as exc:
+            app.processing_status = previous
+            raise CertificateGenerationError("Certificate PDF could not be generated") from exc
+        finally:
+            if app.processing_status != ProcessingStatus.ISSUED.value:
+                app.processing_status = previous
+
+    def get_issued_certificate_bytes(self, application_id: str) -> tuple[bytes, str]:
+        """Return (pdf_bytes, filename) for the issued certificate of this application."""
+        app = self._get_app(application_id)
+        record = get_document(self.db, app.id, ISSUED_CERTIFICATE_CODE)
+        if not record:
+            raise LookupError("Issued certificate not found")
+        try:
+            payload = read_stored_bytes(record.storage_key)
+        except FileNotFoundError as exc:
+            raise LookupError("Issued certificate not found") from exc
+        if not payload.startswith(b"%PDF"):
+            raise LookupError("Issued certificate not found")
+        return payload, record.original_filename
+
     def approve(self, application_id: str, *, actor_id: str, trace_id: str | None) -> OfficerView:
         app = self._get_app(application_id)
+        if app.processing_status == ProcessingStatus.ISSUED.value:
+            # Idempotent retry: keep ISSUED, reuse existing PDF, do not re-audit.
+            if get_document(self.db, app.id, ISSUED_CERTIFICATE_CODE) is None:
+                self._persist_issued_certificate(app)
+            return self._view(app)
         if app.processing_status not in {
             ProcessingStatus.UNDER_REVIEW.value,
             ProcessingStatus.SUBMITTED.value,
@@ -219,6 +286,7 @@ class OfficerService:
             raise OfficerActionError(
                 f"Cannot approve from processing status {app.processing_status}"
             )
+        self._persist_issued_certificate(app)
         app.processing_status = ProcessingStatus.APPROVED.value
         app.updated_at = datetime.now(UTC)
         get_metrics().record_status(app.processing_status)
@@ -226,17 +294,17 @@ class OfficerService:
             "OFFICER_APPROVED",
             actor_id=actor_id,
             trace_id=trace_id,
-            metadata={"application_ref": application_id, "status": app.processing_status},
+            metadata={"application_ref": app.application_id, "status": app.processing_status},
         )
-        # Auto-issue for POC simplicity after approve
         app.processing_status = ProcessingStatus.ISSUED.value
         get_metrics().record_status(app.processing_status)
         self._audit(
             "CERTIFICATE_ISSUED",
             actor_id=actor_id,
             trace_id=trace_id,
-            metadata={"application_ref": application_id, "status": app.processing_status},
+            metadata={"application_ref": app.application_id, "status": app.processing_status},
         )
+        NotificationService(self.db).notify_status(app, ISSUED)
         return self._view(app)
 
     def reject(
@@ -270,6 +338,7 @@ class OfficerService:
                 "reason": reason,
             },
         )
+        NotificationService(self.db).notify_status(app, REJECTED)
         return self._view(app)
 
     def request_correction(
@@ -286,9 +355,7 @@ class OfficerService:
             ProcessingStatus.UNDER_REVIEW.value,
             ProcessingStatus.SUBMITTED.value,
         }:
-            raise OfficerActionError(
-                f"Cannot request correction from {app.processing_status}"
-            )
+            raise OfficerActionError(f"Cannot request correction from {app.processing_status}")
         session = self._session(app)
         if not session:
             raise OfficerActionError("No citizen session bound to application")
@@ -321,6 +388,7 @@ class OfficerService:
                 "notes_present": bool(notes),
             },
         )
+        NotificationService(self.db).notify_status(app, NEEDS_CORRECTION)
         return self._view(app)
 
     def escalate(
