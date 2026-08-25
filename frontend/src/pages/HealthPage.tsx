@@ -183,9 +183,9 @@ export default function HealthPage() {
         </div>
       </section>
 
-      <section className="landing-section" aria-labelledby="how-heading">
+      <section className="landing-section landing-how" aria-labelledby="how-heading">
         <h2 id="how-heading">How it works</h2>
-        <ol className="how-it-works how-it-works-flow">
+        <ol className="how-it-works how-it-works-flow how-it-works-strip">
           {HOW_IT_WORKS.map((item, idx) => (
             <li key={item.step} className="how-it-works-item">
               <span className="how-it-works-step" aria-hidden="true">
@@ -205,7 +205,7 @@ export default function HealthPage() {
         </ol>
       </section>
 
-      <section className="landing-section" aria-labelledby="services-heading">
+      <section className="landing-section landing-services" aria-labelledby="services-heading">
         <h2 id="services-heading">Available services</h2>
         {services.length === 0 && loading && (
           <p className="muted">Loading available services…</p>

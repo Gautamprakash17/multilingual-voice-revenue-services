@@ -929,7 +929,7 @@ export default function JourneyPage() {
 
   return (
     <section className="panel journey">
-      <div className="journey-hero">
+      <div className="journey-hero journey-hero-flat">
         <div className="journey-header">
           <div>
             <p className="eyebrow">Citizen application</p>

@@ -647,16 +647,19 @@ export default function IVRSimulatorPage() {
   }
 
   return (
-    <section className="panel ivr-sim">
+    <section className="panel ivr-sim ivr-sim-focus">
       <span className="sim-banner" role="status">
         Demonstration simulator — not a live phone line
       </span>
-      <p className="eyebrow">Demonstration</p>
-      <h1>IVR</h1>
-      <p className="lede">
-        Use the keypad for menus and codes. When the service asks you to speak, the microphone
-        becomes the main control.
-      </p>
+      <header className="sim-page-head">
+        <div>
+          <p className="eyebrow">Demonstration</p>
+          <h1>IVR</h1>
+        </div>
+        <p className="sim-page-lede muted">
+          Keypad for menus and codes · microphone when the service asks you to speak.
+        </p>
+      </header>
       {error && (
         <div className="alert error" role="alert">
           {error}

@@ -3936,3 +3936,306 @@ main:has(.officer-portal) {
     grid-template-columns: 1fr;
   }
 }
+
+/* —— 8.5 polish: less card stacking, ops console, interaction-first —— */
+
+.landing-hero-premium {
+  border-radius: 0 0 var(--radius-xl) var(--radius-xl);
+  box-shadow: none;
+  border-bottom: 1px solid rgba(26, 79, 140, 0.12);
+  margin-left: calc(-1 * var(--space-4));
+  margin-right: calc(-1 * var(--space-4));
+  padding-left: var(--space-5);
+  padding-right: var(--space-5);
+}
+
+.landing-section-band {
+  background: transparent;
+  border: none;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.landing-section-band .channel-grid .channel-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: none;
+}
+
+.how-it-works-strip {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  padding: var(--space-3) var(--space-4);
+  gap: 0;
+}
+
+.how-it-works-strip .how-it-works-item {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  border-radius: 0;
+  padding: var(--space-3);
+  min-height: 0;
+  flex: 1 1 0;
+}
+
+.how-it-works-strip .how-it-works-item:not(:last-child) {
+  border-right: 1px solid var(--border);
+}
+
+.landing-services .service-preview {
+  box-shadow: none;
+  background: var(--surface-muted);
+  border-style: dashed;
+}
+
+.journey-hero-flat {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0 0 var(--space-2);
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  margin-bottom: var(--space-2);
+}
+
+.journey-hero-flat .journey-start-card {
+  margin-top: var(--space-3);
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.conversation-panel-premium {
+  min-height: 22rem;
+}
+
+/* Officer ops console — metric strip instead of five cards */
+.metric-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  margin: var(--space-4) 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.metric-strip-item {
+  flex: 1 1 6.5rem;
+  padding: var(--space-3) var(--space-4);
+  border-right: 1px solid var(--border);
+  min-width: 0;
+}
+
+.metric-strip-item:last-child {
+  border-right: none;
+}
+
+.metric-strip-item span {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.metric-strip-item strong {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 1.5rem;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.metric-strip-item.metric-review strong {
+  color: var(--info);
+}
+
+.metric-strip-item.metric-correction strong {
+  color: var(--warning);
+}
+
+.metric-strip-item.metric-issued strong {
+  color: var(--success);
+}
+
+.metric-strip-item.metric-rejected strong {
+  color: var(--error);
+}
+
+.officer-access-compact {
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+}
+
+.officer-access-compact > summary {
+  display: inline-flex;
+  padding: 0.35rem 0;
+  font-size: 0.88rem;
+}
+
+.officer-access-compact[open] {
+  padding: var(--space-3);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-muted);
+}
+
+.officer-console .officer-queue-panel,
+.officer-console .officer-detail-panel {
+  box-shadow: none;
+  border-color: var(--border-strong);
+}
+
+.officer-queue-panel h2,
+.officer-detail-panel > h2 {
+  font-size: 0.95rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  margin-bottom: var(--space-3);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.officer-tabs-row {
+  margin-bottom: var(--space-3);
+  padding: var(--space-2);
+  background: var(--surface-muted);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+}
+
+/* Simulators — compact page head, interaction dominates */
+.sim-page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  margin-bottom: var(--space-3);
+}
+
+.sim-page-head h1 {
+  margin: 0;
+  font-size: 1.45rem;
+}
+
+.sim-page-lede {
+  margin: 0;
+  max-width: 28rem;
+  font-size: 0.92rem;
+}
+
+.wa-sim-focus,
+.ivr-sim-focus {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.wa-toolbar-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+.wa-toolbar-inline .btn-success {
+  min-height: 2.35rem;
+  padding: 0.4rem 0.9rem;
+}
+
+.resume-box-quiet {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  font-size: 0.9rem;
+}
+
+.resume-box-quiet > summary {
+  color: var(--text-secondary);
+  font-weight: 600;
+  padding: 0.25rem 0;
+}
+
+.resume-box-quiet[open] {
+  padding: var(--space-3);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-muted);
+}
+
+.wa-sim-focus .wa-sim-layout {
+  margin-top: var(--space-1);
+}
+
+.wa-sim-focus .wa-shell-primary {
+  max-width: 32rem;
+  min-height: 34rem;
+  box-shadow:
+    0 12px 36px rgba(0, 0, 0, 0.14),
+    0 2px 6px rgba(0, 0, 0, 0.06);
+}
+
+.wa-sim-focus .wa-thread {
+  min-height: 380px;
+  max-height: min(62vh, 560px);
+}
+
+.ivr-sim-focus .ivr-layout-connected {
+  margin-top: var(--space-1);
+}
+
+.ivr-sim-focus .ivr-phone-shell {
+  box-shadow:
+    0 12px 32px rgba(15, 22, 32, 0.35),
+    0 0 0 1px #2f3b4f;
+}
+
+.ivr-sim-focus .phone-sim {
+  order: 2;
+  opacity: 0.92;
+}
+
+@media (max-width: 720px) {
+  .landing-hero-premium {
+    margin-left: calc(-1 * var(--space-3));
+    margin-right: calc(-1 * var(--space-3));
+  }
+
+  .how-it-works-strip .how-it-works-item:not(:last-child) {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .metric-strip-item {
+    flex: 1 1 45%;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .metric-strip-item:nth-child(2n) {
+    border-right: none;
+  }
+
+  .sim-page-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+

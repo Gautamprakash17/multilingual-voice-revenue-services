@@ -225,30 +225,30 @@ export default function OfficerPage() {
         escalate. Completed work stays in History.
       </p>
 
-      <div className="metric-grid" aria-label="Application summary">
-        <article className="metric-card">
+      <div className="metric-strip" aria-label="Application summary">
+        <div className="metric-strip-item metric-pending">
           <span>Pending</span>
           <strong>{counts.pending}</strong>
-        </article>
-        <article className="metric-card">
+        </div>
+        <div className="metric-strip-item metric-review">
           <span>Under review</span>
           <strong>{counts.underReview}</strong>
-        </article>
-        <article className="metric-card">
+        </div>
+        <div className="metric-strip-item metric-correction">
           <span>Needs correction</span>
           <strong>{counts.needsCorrection}</strong>
-        </article>
-        <article className="metric-card">
+        </div>
+        <div className="metric-strip-item metric-issued">
           <span>Issued</span>
           <strong>{counts.issued}</strong>
-        </article>
-        <article className="metric-card">
+        </div>
+        <div className="metric-strip-item metric-rejected">
           <span>Rejected</span>
           <strong>{counts.rejected}</strong>
-        </article>
+        </div>
       </div>
 
-      <details className="section-card officer-access">
+      <details className="officer-access officer-access-compact">
         <summary>Officer access</summary>
         <div className="row gap">
           <label htmlFor="officer-token">
@@ -304,8 +304,8 @@ export default function OfficerPage() {
       </button>
       </div>
 
-      <div className="grid two">
-        <div className="section-card">
+      <div className="grid two officer-console">
+        <div className="section-card officer-queue-panel">
           <h2>{mode === "history" ? "History" : "Applications queue"}</h2>
           {mode === "applications" && (
             <div className="queue-table-wrap">

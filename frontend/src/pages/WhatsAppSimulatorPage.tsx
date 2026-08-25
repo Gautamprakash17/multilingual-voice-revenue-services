@@ -368,40 +368,39 @@ export default function WhatsAppSimulatorPage() {
   }
 
   return (
-    <section className="panel wa-sim">
+    <section className="panel wa-sim wa-sim-focus">
       <span className="sim-banner" role="status">
         Demonstration simulator — not a live WhatsApp account
       </span>
-      <p className="eyebrow">Demonstration</p>
-      <h1>WhatsApp</h1>
-      <p className="lede">
-        Continue the same application in a chat-style demonstration. Your Application ID stays the
-        same across Web, WhatsApp, and IVR.
-      </p>
+      <header className="sim-page-head">
+        <div>
+          <p className="eyebrow">Demonstration</p>
+          <h1>WhatsApp</h1>
+        </div>
+        <p className="sim-page-lede muted">
+          Same Application ID across Web, WhatsApp, and IVR.
+        </p>
+      </header>
       {error && (
         <div className="alert error" role="alert">
           {error}
         </div>
       )}
 
-      <div className="section-card wa-toolbar">
-        <div className="journey-actions">
-          <button
-            type="button"
-            className="btn-success"
-            onClick={() => void onStart()}
-            disabled={busy || uploading}
-          >
-            New chat
-          </button>
-          {applicationId && (
-            <span className="state-pill">{stateLabel(state)}</span>
-          )}
-          <span className="meta">{applicationId || "No application yet"}</span>
-        </div>
+      <div className="wa-toolbar wa-toolbar-inline">
+        <button
+          type="button"
+          className="btn-success"
+          onClick={() => void onStart()}
+          disabled={busy || uploading}
+        >
+          New chat
+        </button>
+        {applicationId && <span className="state-pill">{stateLabel(state)}</span>}
+        <span className="meta">{applicationId || "No application yet"}</span>
       </div>
 
-      <details className="section-card resume-box">
+      <details className="resume-box resume-box-quiet">
         <summary>Continue an existing application</summary>
         <p className="muted">{whatsappContinueHint()}</p>
         <label htmlFor="wa-resume-app">
