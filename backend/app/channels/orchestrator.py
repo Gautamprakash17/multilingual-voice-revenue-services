@@ -25,15 +25,18 @@ from app.services.i18n import (
     document_label,
     document_next_prompt,
     document_reupload_prompt,
+    field_label_for_confirm,
     field_prompt,
+    join_prompt_parts,
     language_select_ivr_prompt,
     language_select_prompt,
+    numbered_field_list,
     service_select_ivr_prompt,
     t,
 )
 from app.services.journey import JourneyReply, JourneyService
 from app.services.languages import get_language_catalog
-from app.services.state_machine import JourneyState
+from app.services.state_machine import JourneyState, ProcessingStatus
 from app.speech.digits import (
     DIGIT_SPEECH_CONFIRM_FIELDS,
     speech_value_for_confirmation,
@@ -240,12 +243,12 @@ class ChannelOrchestrator:
                     if nxt:
                         stt_data["next_field"] = nxt
                         field_def = self.journey.service.field_by_name(nxt)
-                        if (
-                            envelope.channel == Channel.IVR
-                            and field_def
-                            and field_def.type == "date"
-                        ):
-                            prompt = t("field_date_of_birth_ivr", lang)
+                        if envelope.channel == Channel.IVR and field_def:
+                            ivr_prompt = self._ivr_numeric_field_prompt(
+                                field_def, lang
+                            )
+                            if ivr_prompt:
+                                prompt = ivr_prompt
                 return ChannelReply(
                     application_id=app.application_id,
                     state=app.current_state,
@@ -424,6 +427,7 @@ class ChannelOrchestrator:
             },
         )
         lang = app.language or "en"
+        nxt = app.correcting_field or self.journey._next_missing_field(app)
         return ChannelReply(
             application_id=app.application_id,
             state=app.current_state,
@@ -437,6 +441,14 @@ class ChannelOrchestrator:
                 "consent_granted": app.consent_granted,
                 "auth_step": app.auth_step,
                 "otp_issued": app.auth_step == "otp",
+                "processing_status": app.processing_status,
+                "correction_notes": app.correction_notes,
+                "correcting_field": app.correcting_field,
+                "next_field": nxt,
+                "correction_fields": self.journey._correction_choice_fields(app)
+                if app.processing_status == ProcessingStatus.NEEDS_CORRECTION.value
+                or app.current_state == JourneyState.CORRECTION.value
+                else [],
             },
         )
 
@@ -486,18 +498,23 @@ class ChannelOrchestrator:
         speak: str | None,
         language: str | None,
     ) -> str | None:
-        """Adjust confirmation speech for digit fields without changing UI copy."""
+        """Adjust confirmation speech for digit/date fields without changing UI copy."""
         if not speak or reply.state != JourneyState.FIELD_CONFIRMATION.value:
             return speak
         field = (reply.data or {}).get("field")
-        if field not in DIGIT_SPEECH_CONFIRM_FIELDS:
-            return speak
         value = (reply.data or {}).get("proposed_value")
         if value is None or value == "":
             return speak
-        lang = language or "en"
-        spoken_value = speech_value_for_confirmation(str(field), str(value))
-        return t("field_confirm_heard", lang, value=spoken_value)
+        spoken_value = speech_value_for_confirmation(
+            str(field) if field else None, str(value)
+        )
+        display = (reply.data or {}).get("proposed_display") or value
+        if spoken_value and display and str(display) in speak:
+            return speak.replace(str(display), spoken_value, 1)
+        if field in DIGIT_SPEECH_CONFIRM_FIELDS:
+            lang = language or "en"
+            return t("field_confirm_heard", lang, value=spoken_value)
+        return speak
 
     def _ivr_authenticate_prompts(
         self, reply: JourneyReply, language: str | None
@@ -540,18 +557,28 @@ class ChannelOrchestrator:
         text = t("field_confirm_heard_ivr", lang, value=value)
         return replace(reply, prompt=text, message=text)
 
+    def _ivr_numeric_field_prompt(self, field_def: Any, lang: str) -> str | None:
+        """IVR keypad+voice wording for catalogue digit fields."""
+        if field_def.type == "date":
+            return t("field_date_of_birth_ivr", lang)
+        if field_def.type == "mobile":
+            return t("field_mobile_number_ivr", lang)
+        if field_def.type == "number":
+            return t("field_annual_income_ivr", lang)
+        return None
+
     def _ivr_form_field_prompts(
         self, reply: JourneyReply, language: str | None
     ) -> JourneyReply:
-        """IVR date capture: keypad DDMMYYYY or spoken date. Other fields unchanged."""
+        """IVR digit capture: keypad and spoken values. Other fields unchanged."""
         lang = language or "en"
         nxt = (reply.data or {}).get("next_field") or (reply.data or {}).get("field")
         if not nxt:
             return reply
         field_def = self.journey.service.field_by_name(str(nxt))
-        if not field_def or field_def.type != "date":
+        text = self._ivr_numeric_field_prompt(field_def, lang) if field_def else None
+        if not text:
             return reply
-        text = t("field_date_of_birth_ivr", lang)
         return replace(reply, prompt=text)
 
     def _ivr_menu_prompts(
@@ -822,15 +849,41 @@ class ChannelOrchestrator:
             message = t("payment_failed", lang)
             prompt = message
         elif state == JourneyState.CORRECTION.value:
-            prompt = t("correction_which", lang)
+            field_list = (reply.data or {}).get("field_list")
+            nxt = (reply.data or {}).get("next_field")
+            notes = (reply.data or {}).get("correction_notes")
+            if reply.error == "unknown_field":
+                listed = field_list or numbered_field_list(
+                    list((reply.data or {}).get("correction_fields") or []), lang
+                )
+                message = t("correction_unknown", lang, field_list=listed)
+                prompt = message
+            elif nxt:
+                label = field_label_for_confirm(str(nxt), lang)
+                message = join_prompt_parts(
+                    t("correction_updating", lang, field=label),
+                    t("correction_needed_notes", lang, notes=notes) if notes else "",
+                )
+                prompt = field_prompt(str(nxt), lang)
+            else:
+                listed = field_list or ""
+                prompt = t("correction_which", lang, field_list=listed)
+                message = prompt
         elif state == JourneyState.SUBMITTED.value:
             message = t("submitted", lang, application_id=reply.application_id)
         elif state == JourneyState.ESCALATED.value:
             message = t("escalation", lang)
         if reply.error == "validation_failed":
             field = (reply.data or {}).get("field")
+            code = (reply.data or {}).get("validation_code")
             if field == "mobile_number":
                 message = t("validation_mobile_invalid", lang)
+            elif field == "date_of_birth" and code == "max_age":
+                message = t(
+                    "validation_date_max_age",
+                    lang,
+                    max_age=(reply.data or {}).get("max_age") or 120,
+                )
             else:
                 message = t("validation_failed", lang)
         if reply.error == "consent_declined":
@@ -883,7 +936,10 @@ class ChannelOrchestrator:
             return t("service_select", lang)
         if state == JourneyState.FORM_CAPTURE:
             nxt = self.journey._next_missing_field(app)
-            return field_prompt(nxt, lang) if nxt else t("form_complete", lang)
+            ask = field_prompt(nxt, lang) if nxt else t("form_complete", lang)
+            if app.processing_status == ProcessingStatus.NEEDS_CORRECTION.value:
+                return self.journey.citizen_correction_prompt(app, lang)
+            return ask
         if state == JourneyState.FIELD_CONFIRMATION:
             if app.pending_voice_value:
                 display = app.pending_voice_value
@@ -907,4 +963,6 @@ class ChannelOrchestrator:
             return "Reply RETRY"
         if state == JourneyState.SUBMITTED:
             return t("application_id_label", lang, application_id=app.application_id)
+        if state == JourneyState.CORRECTION:
+            return self.journey.citizen_correction_prompt(app, lang)
         return t("welcome", lang)

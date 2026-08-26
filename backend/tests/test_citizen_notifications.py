@@ -172,7 +172,6 @@ async def test_needs_correction_issued_and_rejected_notifications(
     assert "Action required" in corr_msg
     assert "Fix income" not in corr_msg
 
-    journey.handle_message(app_id, token, "annual_income", trace_id="corr")
     journey.handle_message(app_id, token, "175000", trace_id="corr")
     journey.handle_message(app_id, token, "CONFIRM", trace_id="corr")
     app = journey._get_app_by_ref(app_id)
@@ -393,7 +392,6 @@ async def test_officer_actions_still_work(
         trace_id="off",
     )
     assert corr.processing_status == ProcessingStatus.NEEDS_CORRECTION.value
-    journey.handle_message(app_id, token, "annual_income", trace_id="off")
     journey.handle_message(app_id, token, "175000", trace_id="off")
     journey.handle_message(app_id, token, "CONFIRM", trace_id="off")
     issued = officer.approve(app_id, actor_id="officer", trace_id="off")

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from app.services.catalogue import FieldDef
@@ -18,6 +18,16 @@ class ValidationResult:
     value: Any | None = None
     error: str | None = None
     expected_format: str | None = None
+    code: str | None = None
+
+
+def age_in_years(born: date, today: date | None = None) -> int:
+    """Whole years completed on ``today`` (not a year-delta that ignores birthday)."""
+    on = today or datetime.now().date()
+    years = on.year - born.year
+    if (on.month, on.day) < (born.month, born.day):
+        years -= 1
+    return years
 
 
 def validate_field(field: FieldDef, raw: str) -> ValidationResult:
@@ -71,12 +81,24 @@ def validate_field(field: FieldDef, raw: str) -> ValidationResult:
                 error="Invalid date",
                 expected_format=expected,
             )
-        if parsed.date() > datetime.now().date():
+        born = parsed.date()
+        today = datetime.now().date()
+        if born > today:
             return ValidationResult(
                 ok=False,
                 error="Date of birth cannot be in the future",
                 expected_format="DD/MM/YYYY",
+                code="future_date",
             )
+        if "max_age" in rules:
+            max_age = int(rules["max_age"])
+            if age_in_years(born, today) > max_age:
+                return ValidationResult(
+                    ok=False,
+                    error=f"Age cannot be more than {max_age} years",
+                    expected_format="DD/MM/YYYY",
+                    code="max_age",
+                )
         return ValidationResult(ok=True, value=parsed.strftime("%d/%m/%Y"))
 
     if field.type == "mobile":

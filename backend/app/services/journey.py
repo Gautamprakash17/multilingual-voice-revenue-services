@@ -32,7 +32,11 @@ from app.services.i18n import (
     document_next_prompt,
     document_reupload_prompt,
     field_label_for_confirm,
+    join_prompt_parts,
     language_select_prompt,
+    numbered_field_list,
+    resolve_field_choice,
+    sanitize_citizen_notes,
 )
 from app.services.i18n import field_prompt as i18n_field_prompt
 from app.services.i18n import t as i18n_t
@@ -177,6 +181,65 @@ class JourneyService:
             # After correcting one field, clear flag
             return None
         return None
+
+    def _correction_choice_fields(self, app: Application) -> list[str]:
+        missing = [
+            name
+            for name in self.service.required_field_names()
+            if name not in (app.form_data or {}) or name == app.correcting_field
+        ]
+        seen: list[str] = []
+        for name in missing:
+            if name not in seen:
+                seen.append(name)
+        return seen or list(self.service.required_field_names())
+
+    def _officer_correction_context(self, app: Application, lang: str) -> str:
+        if app.processing_status != ProcessingStatus.NEEDS_CORRECTION.value:
+            return ""
+        field = app.correcting_field or self._next_missing_field(app)
+        if field:
+            intro = i18n_t(
+                "correction_needed_field",
+                lang,
+                field=field_label_for_confirm(field, lang),
+            )
+        else:
+            intro = i18n_t("correction_needed", lang)
+        notes = sanitize_citizen_notes(app.correction_notes)
+        extra = i18n_t("correction_needed_notes", lang, notes=notes) if notes else ""
+        return join_prompt_parts(intro, extra)
+
+    def citizen_correction_prompt(self, app: Application, lang: str | None = None) -> str:
+        """Next citizen-facing instruction after an officer or self-serve correction."""
+        language = lang or self._lang(app)
+        context = self._officer_correction_context(app, language)
+        field = app.correcting_field or self._next_missing_field(app)
+        if app.current_state == JourneyState.FORM_CAPTURE.value or (
+            app.correcting_field and field
+        ):
+            ask = self._field_prompt(field, app) if field else i18n_t("form_complete", language)
+            return join_prompt_parts(context, ask)
+        field_list = numbered_field_list(self._correction_choice_fields(app), language)
+        return join_prompt_parts(
+            context,
+            i18n_t("correction_which", language, field_list=field_list),
+        )
+
+    def _correction_reply_data(self, app: Application, **extra: Any) -> dict[str, Any]:
+        fields = self._correction_choice_fields(app)
+        lang = self._lang(app)
+        nxt = app.correcting_field or self._next_missing_field(app)
+        data: dict[str, Any] = {
+            "field_list": numbered_field_list(fields, lang),
+            "correction_fields": fields,
+            "correction_notes": app.correction_notes,
+            "processing_status": app.processing_status,
+            "next_field": nxt,
+            "form_data": dict(app.form_data or {}),
+        }
+        data.update(extra)
+        return data
 
     def _missing_documents(self, app: Application) -> list[str]:
         verified = {
@@ -1069,11 +1132,14 @@ class JourneyService:
                 trace_id=trace_id,
                 event_type="CORRECTION_REQUESTED",
             )
+            lang = self._lang(app)
+            field_list = numbered_field_list(self._correction_choice_fields(app), lang)
             return JourneyReply(
                 application_id=app.application_id,
                 state=app.current_state,
-                message="Which field do you want to correct?",
-                prompt=", ".join(self.service.required_field_names()),
+                message=i18n_t("correction_which", lang, field_list=field_list),
+                prompt=i18n_t("correction_which", lang, field_list=field_list),
+                data=self._correction_reply_data(app),
             )
 
         field_name = app.correcting_field or self._next_missing_field(app)
@@ -1108,6 +1174,11 @@ class JourneyService:
                     "error": result.error,
                 },
             )
+            fail_data: dict[str, Any] = {"field": field_name}
+            if result.code:
+                fail_data["validation_code"] = result.code
+            if result.code == "max_age":
+                fail_data["max_age"] = int((field.validation or {}).get("max_age") or 0)
             return JourneyReply(
                 application_id=app.application_id,
                 state=app.current_state,
@@ -1115,7 +1186,7 @@ class JourneyService:
                 prompt=self._field_prompt(field_name, app),
                 error="validation_failed",
                 expected_format=result.expected_format,
-                data={"field": field_name},
+                data=fail_data,
             )
 
         if input_modality == "voice":
@@ -1288,30 +1359,34 @@ class JourneyService:
     def _on_correction(
         self, app: Application, session: ConversationSession, text: str, *, trace_id: str | None
     ) -> JourneyReply:
-        field_name = text.strip().lower()
-        if field_name not in self.service.required_field_names():
+        lang = self._lang(app)
+        candidates = self._correction_choice_fields(app)
+        field_list = numbered_field_list(candidates, lang)
+        resolved = resolve_field_choice(text, candidates, lang)
+        if app.correcting_field and not resolved:
+            self._transition(app, session, JourneyState.FORM_CAPTURE, trace_id=trace_id)
+            return self._on_form_capture(app, session, text, trace_id=trace_id)
+        if not resolved:
             return JourneyReply(
                 application_id=app.application_id,
                 state=app.current_state,
-                message="Unknown field.",
-                prompt=", ".join(self.service.required_field_names()),
+                message=i18n_t("correction_unknown", lang, field_list=field_list),
+                prompt=i18n_t("correction_unknown", lang, field_list=field_list),
                 error="unknown_field",
+                data=self._correction_reply_data(app),
             )
-        app.correcting_field = field_name
-        # Clear so it will be re-captured
+        app.correcting_field = resolved
         data = dict(app.form_data or {})
-        data.pop(field_name, None)
+        data.pop(resolved, None)
         app.form_data = data
         self._transition(app, session, JourneyState.FORM_CAPTURE, trace_id=trace_id)
+        label = field_label_for_confirm(resolved, lang)
         return JourneyReply(
             application_id=app.application_id,
             state=app.current_state,
-            message=f"Correcting {field_name}.",
-            prompt=self._field_prompt(field_name, app),
-            data={
-                "next_field": field_name,
-                "form_data": dict(app.form_data or {}),
-            },
+            message=i18n_t("correction_updating", lang, field=label),
+            prompt=self._field_prompt(resolved, app),
+            data=self._correction_reply_data(app, next_field=resolved),
         )
 
     def _document_capture_entry_reply(
@@ -1443,11 +1518,14 @@ class JourneyService:
                 event_type="CORRECTION_REQUESTED",
             )
             get_metrics().record_correction()
+            lang = self._lang(app)
+            field_list = numbered_field_list(self._correction_choice_fields(app), lang)
             return JourneyReply(
                 application_id=app.application_id,
                 state=app.current_state,
-                message="Which field do you want to correct?",
-                prompt=", ".join(self.service.required_field_names()),
+                message=i18n_t("correction_which", lang, field_list=field_list),
+                prompt=i18n_t("correction_which", lang, field_list=field_list),
+                data=self._correction_reply_data(app),
             )
         if cmd == "CONFIRM":
             if app.payment_completed:
@@ -1512,11 +1590,14 @@ class JourneyService:
                 event_type="CORRECTION_REQUESTED",
             )
             get_metrics().record_correction()
+            lang = self._lang(app)
+            field_list = numbered_field_list(self._correction_choice_fields(app), lang)
             return JourneyReply(
                 application_id=app.application_id,
                 state=app.current_state,
-                message="Which field do you want to correct?",
-                prompt=", ".join(self.service.required_field_names()),
+                message=i18n_t("correction_which", lang, field_list=field_list),
+                prompt=i18n_t("correction_which", lang, field_list=field_list),
+                data=self._correction_reply_data(app),
             )
         if cmd in {"PAY", "YES", "CONFIRM", "OK"}:
             self._transition(

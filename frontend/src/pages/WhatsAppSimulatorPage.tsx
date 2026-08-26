@@ -31,6 +31,8 @@ import {
 import { documentLabel } from "../journey/labels";
 import {
   lookupSessionHandoff,
+  peekLatestHandoff,
+  resolveResumeToken,
   storeSessionHandoff,
   type WhatsAppResumeNavState,
 } from "../journey/sessionHandoff";
@@ -126,6 +128,8 @@ export default function WhatsAppSimulatorPage() {
     if (reply.access_token) {
       setToken(reply.access_token);
       storeSessionHandoff(reply.application_id, reply.access_token);
+    } else if (token) {
+      storeSessionHandoff(reply.application_id, token);
     }
     setState(reply.state);
     if (reply.language) setLanguage(reply.language);
@@ -183,17 +187,20 @@ export default function WhatsAppSimulatorPage() {
     const nav = location.state as WhatsAppResumeNavState | null;
     if (nav?.resumeFromWeb && nav.applicationId) {
       autoResumeDone.current = true;
-      const handoffToken = lookupSessionHandoff(nav.applicationId);
+      const handoffToken = resolveResumeToken(nav.applicationId, nav.accessToken);
       if (handoffToken) {
         void doResume(nav.applicationId, handoffToken);
       } else {
         setError(
-          "Could not continue securely from Apply. Start the application again and choose Continue on WhatsApp.",
+          "Could not continue securely from Apply or IVR. Start the application again and choose Continue on WhatsApp.",
         );
         setResumeAppId(nav.applicationId);
       }
       navigate(location.pathname, { replace: true, state: null });
+      return;
     }
+    const latest = peekLatestHandoff();
+    if (latest?.applicationId) setResumeAppId(latest.applicationId);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot handoff on mount
   }, []);
 

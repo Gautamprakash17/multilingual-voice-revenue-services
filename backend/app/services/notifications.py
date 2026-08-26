@@ -21,6 +21,7 @@ from app.models.application import Application
 from app.models.notification import CitizenNotification
 from app.services.catalogue import get_service
 from app.services.documents import ISSUED_CERTIFICATE_CODE, get_document
+from app.services.i18n import field_label_for_confirm
 from app.services.i18n import t as i18n_t
 from app.services.state_machine import ProcessingStatus
 
@@ -163,11 +164,17 @@ class NotificationService:
     def _persist(self, app: Application, event_type: str) -> CitizenNotification:
         language = (app.language or "en").lower()
         service_name = localized_service_name(app.service_code, language)
+        body_key = _I18N_BODY[event_type]
+        extra: dict[str, str] = {}
+        if event_type == NEEDS_CORRECTION and app.correcting_field:
+            body_key = "notification_needs_correction_field"
+            extra["field"] = field_label_for_confirm(app.correcting_field, language)
         body = i18n_t(
-            _I18N_BODY[event_type],
+            body_key,
             language,
             service_name=service_name,
             application_id=app.application_id,
+            **extra,
         )
         subject = i18n_t(
             _I18N_SUBJECT[event_type],

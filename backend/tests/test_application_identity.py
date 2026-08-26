@@ -353,12 +353,16 @@ async def test_rejected_channel_application_appears_in_history(
     assert not any(q.application_id == app_id for q in officer.list_queue())
 
 
-def test_draft_channel_application_is_not_in_officer_queue(
+def test_draft_channel_application_is_in_officer_queue(
     orch: ChannelOrchestrator, db_session: Session
 ):
     start = orch.start(channel="ivr")
     officer = OfficerService(db_session)
-    assert not any(q.application_id == start.application_id for q in officer.list_queue())
+    queue = officer.list_queue()
+    assert any(q.application_id == start.application_id for q in queue)
+    row = next(q for q in queue if q.application_id == start.application_id)
+    assert row.processing_status == ProcessingStatus.DRAFT.value
+    assert row.channel == "ivr"
     detail = officer.get_application(start.application_id)
     assert detail.processing_status == ProcessingStatus.DRAFT.value
     assert detail.channel == "ivr"

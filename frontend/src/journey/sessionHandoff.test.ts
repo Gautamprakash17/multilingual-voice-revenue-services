@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   lookupSessionHandoff,
   peekLatestHandoff,
+  resolveResumeToken,
   storeSessionHandoff,
 } from "./sessionHandoff";
 
@@ -53,5 +54,16 @@ describe("sessionHandoff", () => {
   it("returns null when application id is unknown", () => {
     storeSessionHandoff("INC-1001", "tok-abc");
     expect(lookupSessionHandoff("INC-9999")).toBeNull();
+  });
+
+  it("prefers a navigation token and stores it for later lookup", () => {
+    expect(resolveResumeToken("INC-2002", "tok-nav")).toBe("tok-nav");
+    expect(lookupSessionHandoff("INC-2002")).toBe("tok-nav");
+  });
+
+  it("falls back to stored handoff when navigation has no token", () => {
+    storeSessionHandoff("INC-2003", "tok-stored");
+    expect(resolveResumeToken("INC-2003")).toBe("tok-stored");
+    expect(resolveResumeToken("INC-2003", "")).toBe("tok-stored");
   });
 });

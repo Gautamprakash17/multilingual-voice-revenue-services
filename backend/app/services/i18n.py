@@ -45,9 +45,11 @@ REQUIRED_KEYS = (
     "field_date_of_birth",
     "field_date_of_birth_ivr",
     "field_mobile_number",
+    "field_mobile_number_ivr",
     "field_address",
     "field_district",
     "field_annual_income",
+    "field_annual_income_ivr",
     "field_income_source",
     "form_complete",
     "document_prompt",
@@ -74,10 +76,15 @@ REQUIRED_KEYS = (
     "payment_failed_ivr",
     "correction_which",
     "correction_updating",
+    "correction_needed",
+    "correction_needed_field",
+    "correction_needed_notes",
+    "correction_unknown",
     "submitted",
     "application_id_label",
     "validation_failed",
     "validation_mobile_invalid",
+    "validation_date_max_age",
     "field_confirm_heard",
     "field_confirm_heard_ivr",
     "field_confirm_retry",
@@ -98,6 +105,7 @@ REQUIRED_KEYS = (
     "notification_submitted",
     "notification_under_review",
     "notification_needs_correction",
+    "notification_needs_correction_field",
     "notification_issued",
     "notification_rejected",
     "notification_email_subject_submitted",
@@ -211,6 +219,46 @@ def field_label_for_confirm(field_name: str, language: str = "en") -> str:
     if label == key:
         return field_name.replace("_", " ")
     return label
+
+
+def join_prompt_parts(*parts: str) -> str:
+    return " ".join(part.strip() for part in parts if part and str(part).strip())
+
+
+def sanitize_citizen_notes(notes: str | None) -> str:
+    """Strip braces/newlines so officer notes can be interpolated into i18n templates."""
+    if not notes:
+        return ""
+    cleaned = " ".join(str(notes).split())
+    return cleaned.replace("{", "").replace("}", "")[:240]
+
+
+def numbered_field_list(field_names: list[str], language: str = "en") -> str:
+    return "; ".join(
+        f"{index}. {field_label_for_confirm(name, language)}"
+        for index, name in enumerate(field_names, start=1)
+    )
+
+
+def resolve_field_choice(
+    text: str, field_names: list[str], language: str = "en"
+) -> str | None:
+    """Match a citizen reply to a catalogue field (number, key, or label)."""
+    raw = (text or "").strip().lower()
+    if not raw or not field_names:
+        return None
+    if raw.isdigit():
+        index = int(raw)
+        if 1 <= index <= len(field_names):
+            return field_names[index - 1]
+    compact = raw.replace(" ", "_")
+    for name in field_names:
+        if raw == name or compact == name:
+            return name
+        label = field_label_for_confirm(name, language).lower()
+        if raw == label or compact == label.replace(" ", "_"):
+            return name
+    return None
 
 
 def document_label_i18n_key(document_code: str) -> str:

@@ -221,11 +221,16 @@ export default function OfficerPage() {
       <p className="eyebrow">Operations</p>
       <h1>Officer Portal</h1>
       <p className="lede">
-        Review submitted applications. Approve and issue, request corrections, reject, or
-        escalate. Completed work stays in History.
+        In-progress drafts from IVR, WhatsApp, and Apply appear here with their Application ID.
+        Officer actions become available after the citizen submits. Completed work stays in
+        History.
       </p>
 
       <div className="metric-strip" aria-label="Application summary">
+        <div className="metric-strip-item metric-progress">
+          <span>In progress</span>
+          <strong>{counts.inProgress}</strong>
+        </div>
         <div className="metric-strip-item metric-pending">
           <span>Pending</span>
           <strong>{counts.pending}</strong>
@@ -438,6 +443,12 @@ export default function OfficerPage() {
                     </dd>
                   </div>
                 </dl>
+                {selected.processing_status === "DRAFT" ? (
+                  <p className="muted">
+                    This application is still in progress. Approve, reject, and correction
+                    actions become available after the citizen submits.
+                  </p>
+                ) : null}
                 {(() => {
                   const track = statusLifecycleSteps(selected.processing_status);
                   return track.length > 0 ? (

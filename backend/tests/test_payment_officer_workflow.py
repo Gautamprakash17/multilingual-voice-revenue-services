@@ -252,11 +252,10 @@ async def test_officer_rbac_and_actions(
         trace_id="off",
     )
     assert corr.processing_status == ProcessingStatus.NEEDS_CORRECTION.value
-    assert journey._get_app_by_ref(app_id).current_state == JourneyState.CORRECTION.value
+    assert journey._get_app_by_ref(app_id).current_state == JourneyState.FORM_CAPTURE.value
     assert "annual_income" not in (journey._get_app_by_ref(app_id).form_data or {})
 
-    # Citizen targeted correction + resubmit (payment already done)
-    journey.handle_message(app_id, token, "annual_income", trace_id="off")
+    # Citizen sends the new value for the officer-targeted field, then resubmits.
     journey.handle_message(app_id, token, "175000", trace_id="off")
     assert journey._get_app_by_ref(app_id).current_state == JourneyState.REVIEW_CONFIRM.value
     resub = journey.handle_message(app_id, token, "CONFIRM", trace_id="off")

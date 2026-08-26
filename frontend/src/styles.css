@@ -4060,6 +4060,10 @@ main:has(.officer-portal) {
   font-variant-numeric: tabular-nums;
 }
 
+.metric-strip-item.metric-progress strong {
+  color: var(--text);
+}
+
 .metric-strip-item.metric-review strong {
   color: var(--info);
 }

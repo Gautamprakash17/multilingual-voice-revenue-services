@@ -170,6 +170,7 @@ class OfficerService:
 
     def list_queue(self) -> list[OfficerView]:
         statuses = {
+            ProcessingStatus.DRAFT.value,
             ProcessingStatus.SUBMITTED.value,
             ProcessingStatus.UNDER_REVIEW.value,
             ProcessingStatus.NEEDS_CORRECTION.value,
@@ -365,13 +366,24 @@ class OfficerService:
         session.current_state = JourneyState.CORRECTION.value
         app.processing_status = ProcessingStatus.NEEDS_CORRECTION.value
         app.correction_notes = notes
-        if target_fields:
+        valid_names = set(get_service(app.service_code).required_field_names())
+        targets = [
+            name.strip()
+            for name in (target_fields or [])
+            if isinstance(name, str) and name.strip() in valid_names
+        ]
+        if targets:
             # Targeted correction: clear only requested fields
             data = dict(app.form_data or {})
-            for name in target_fields:
+            for name in targets:
                 data.pop(name, None)
             app.form_data = data
-            app.correcting_field = target_fields[0] if len(target_fields) == 1 else None
+        app.correcting_field = targets[0] if len(targets) == 1 else None
+        if app.correcting_field:
+            assert_transition(app.current_state, JourneyState.FORM_CAPTURE)
+            app.current_state = JourneyState.FORM_CAPTURE.value
+            session.current_state = JourneyState.FORM_CAPTURE.value
+        to_state = app.current_state
         app.updated_at = datetime.now(UTC)
         get_metrics().record_correction()
         get_metrics().record_status(app.processing_status)
@@ -382,7 +394,7 @@ class OfficerService:
             metadata={
                 "application_ref": application_id,
                 "from_state": previous,
-                "to_state": JourneyState.CORRECTION.value,
+                "to_state": to_state,
                 "target_fields": target_fields or [],
                 # notes may be operational; keep short
                 "notes_present": bool(notes),

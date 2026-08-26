@@ -228,6 +228,29 @@ describe("IVR date of birth keypad plus voice", () => {
     );
   });
 
+  it("opens dual keypad+voice for mobile, OTP, and numeric form fields", () => {
+    expect(isIvrDualInputStep("mobile")).toBe(true);
+    expect(isIvrFreeFormSpeechStep("mobile")).toBe(true);
+    expect(isIvrKeypadOpen("mobile")).toBe(true);
+    expect(ivrKeypadHint("mobile").toLowerCase()).toContain("speak");
+
+    expect(isIvrDualInputStep("otp")).toBe(true);
+    expect(isIvrFreeFormSpeechStep("otp")).toBe(true);
+    expect(ivrKeypadHint("otp").toLowerCase()).toContain("speak");
+
+    expect(
+      ivrInputMode("FORM_CAPTURE", "", { nextField: "mobile_number", fieldType: "mobile" }),
+    ).toBe("mobile");
+    expect(
+      ivrInputMode("FORM_CAPTURE", "", { nextField: "annual_income", fieldType: "number" }),
+    ).toBe("digits");
+    expect(isIvrDualInputStep("digits")).toBe(true);
+    expect(isIvrFreeFormSpeechStep("digits")).toBe(true);
+    expect(shouldAutoSubmitDtmf("digits", "120000")).toBe(false);
+    expect(shouldAutoSubmitDtmf("digits", "120000", "#")).toBe(true);
+    expect(appendIvrKey("120000", "#", "digits")).toBe("120000");
+  });
+
   it("opens collect mode for catalogue date fields so keypad and mic are both live", () => {
     const mode = ivrInputMode("FORM_CAPTURE", "", {
       nextField: "date_of_birth",

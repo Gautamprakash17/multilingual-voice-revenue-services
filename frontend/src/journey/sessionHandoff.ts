@@ -16,6 +16,8 @@ export type SessionHandoff = {
 export type WhatsAppResumeNavState = {
   resumeFromWeb: true;
   applicationId: string;
+  /** Internal session token — never shown in the UI. */
+  accessToken?: string;
 };
 
 export function normalizeCitizenApplicationId(value: string): string {
@@ -56,6 +58,18 @@ export function lookupSessionHandoff(applicationId: string): string | null {
     return null;
   }
   return null;
+}
+
+export function resolveResumeToken(
+  applicationId: string,
+  navToken?: string | null,
+): string | null {
+  const fromNav = (navToken || "").trim();
+  if (fromNav) {
+    storeSessionHandoff(applicationId, fromNav);
+    return fromNav;
+  }
+  return lookupSessionHandoff(applicationId);
 }
 
 export function peekLatestHandoff(): SessionHandoff | null {

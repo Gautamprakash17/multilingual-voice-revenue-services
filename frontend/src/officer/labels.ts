@@ -41,6 +41,7 @@ export function formatOfficerChannel(channel: string | null | undefined): string
 }
 
 export type OfficerStatusCounts = {
+  inProgress: number;
   pending: number;
   underReview: number;
   needsCorrection: number;
@@ -55,6 +56,7 @@ export function officerStatusCounts(
   const count = (rows: Array<{ processing_status: string }>, status: string) =>
     rows.filter((row) => row.processing_status.toUpperCase() === status).length;
   return {
+    inProgress: count(queue, "DRAFT"),
     pending: count(queue, "SUBMITTED"),
     underReview: count(queue, "UNDER_REVIEW"),
     needsCorrection: count(queue, "NEEDS_CORRECTION"),

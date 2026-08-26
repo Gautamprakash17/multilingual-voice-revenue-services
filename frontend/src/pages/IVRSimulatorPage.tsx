@@ -104,6 +104,7 @@ export default function IVRSimulatorPage() {
   const nextFieldRef = useRef<string | null>(null);
   const applicationIdRef = useRef<string | null>(null);
   const tokenRef = useRef<string | null>(null);
+  const lastTokenRef = useRef<string | null>(null);
   const speechStepKeyRef = useRef("");
   const speechRef = useRef("");
   const pressTimerRef = useRef(0);
@@ -144,6 +145,7 @@ export default function IVRSimulatorPage() {
   busyRef.current = busy;
   applicationIdRef.current = applicationId;
   tokenRef.current = token;
+  if (token) lastTokenRef.current = token;
   if (!isDtmfSubmitLocked(sendingRef.current, busyRef.current)) {
     keypadModeRef.current = keypadMode;
     speechModeRef.current = speechMode;
@@ -182,7 +184,8 @@ export default function IVRSimulatorPage() {
     logEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [log]);
 
-  // Free-form speech → barge-in TTS and start real microphone capture.
+  // Speech/dual steps: let the prompt finish speaking, then open the mic.
+  // Starting the mic immediately barges in and citizens never hear mobile/DOB prompts.
   useEffect(() => {
     if (!inCall || !speechMode) {
       stopMicCapture();
@@ -191,7 +194,6 @@ export default function IVRSimulatorPage() {
       speechStepKeyRef.current = "";
       return;
     }
-    // Date keypad digits in progress — don't steal them with auto-listen.
     if (dualInput && buffer.length > 0) {
       stopMicCapture();
       setListening(false);
@@ -211,11 +213,32 @@ export default function IVRSimulatorPage() {
       setSpeech("");
       setLastHeard(null);
     }
-    audioRef.current.interruptForRecording();
-    setListening(true);
-    void beginMicCapture();
+
+    let cancelled = false;
+    const audio = audioRef.current;
+    const startMic = () => {
+      if (cancelled || sendingRef.current || busyRef.current) return;
+      if (dualInput && bufferRef.current.length > 0) return;
+      setListening(true);
+      void beginMicCapture();
+    };
+    const tryStart = () => {
+      if (cancelled) return;
+      if (audio.isPlaying()) {
+        audio.setUiStateListener((ui) => {
+          if (ui === "playing") return;
+          audio.setUiStateListener(undefined);
+          startMic();
+        });
+        return;
+      }
+      startMic();
+    };
+    const waitId = window.setTimeout(tryStart, 120);
     return () => {
-      // New effect run / unmount — abandon in-flight capture for this generation.
+      cancelled = true;
+      window.clearTimeout(waitId);
+      audio.setUiStateListener(undefined);
       stopMicCapture();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -350,7 +373,11 @@ export default function IVRSimulatorPage() {
     if (reply.access_token) {
       setToken(reply.access_token);
       tokenRef.current = reply.access_token;
+      lastTokenRef.current = reply.access_token;
       storeSessionHandoff(reply.application_id, reply.access_token);
+    } else {
+      const existing = tokenRef.current || lastTokenRef.current;
+      if (existing) storeSessionHandoff(reply.application_id, existing);
     }
     setState(reply.state);
     stateRef.current = reply.state;
@@ -434,7 +461,7 @@ export default function IVRSimulatorPage() {
   }
 
   function continueOnWhatsApp(appId: string) {
-    const sessionToken = tokenRef.current;
+    const sessionToken = tokenRef.current || lastTokenRef.current;
     if (sessionToken) {
       storeSessionHandoff(appId, sessionToken);
     }
@@ -442,6 +469,7 @@ export default function IVRSimulatorPage() {
       state: {
         resumeFromWeb: true,
         applicationId: appId,
+        accessToken: sessionToken || undefined,
       } satisfies WhatsAppResumeNavState,
     });
   }
@@ -531,7 +559,7 @@ export default function IVRSimulatorPage() {
       setListening(false);
     }
 
-    if (modeNow === "collect" && key === "#") {
+    if ((modeNow === "collect" || modeNow === "digits") && key === "#") {
       if (bufferRef.current) {
         flashKey(key);
         void sendDtmf(bufferRef.current);
@@ -783,7 +811,7 @@ export default function IVRSimulatorPage() {
           <h1>IVR</h1>
         </div>
         <p className="sim-page-lede muted">
-          Keypad for menus, codes, and date of birth · microphone for spoken answers.
+          Keypad or voice for numbers (mobile, OTP, date of birth, income) · microphone for names and other answers.
         </p>
       </header>
       {error && (
@@ -814,7 +842,7 @@ export default function IVRSimulatorPage() {
       )}
 
       <div className="ivr-layout-connected">
-      <div className={`ivr-phone-shell${dualInput ? " ivr-dob-dual" : ""}`}>
+      <div className={`ivr-phone-shell${dualInput ? " ivr-dob-dual ivr-dual" : ""}`}>
         {inCall && (
           <div className="ivr-call-banner" role="status" aria-live="polite">
             <span className="ivr-call-live">Call connected</span>

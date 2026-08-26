@@ -1012,6 +1012,7 @@ export default function JourneyPage() {
                     state: {
                       resumeFromWeb: true,
                       applicationId,
+                      accessToken: token,
                     } satisfies WhatsAppResumeNavState,
                   });
                 }}

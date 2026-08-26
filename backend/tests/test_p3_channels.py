@@ -706,7 +706,7 @@ def test_ivr_dtmf_language_menu_and_consent(orch: ChannelOrchestrator):
     assert orch.journey._get_app_by_ref(app_en).language == "en"
     assert ok.data.get("auth_step") == "mobile"
     assert "keypad" in (ok.prompt or "").lower()
-    assert "say" not in (ok.prompt or "").lower()
+    assert "say" in (ok.prompt or "").lower()
 
     mobile = orch.process_channel_payload(
         "ivr",
@@ -908,6 +908,24 @@ def test_ivr_dob_keypad_eight_digits(orch: ChannelOrchestrator):
     assert saved.error != "validation_failed"
     app = orch.journey._get_app_by_ref(app_id)
     assert app.form_data.get("date_of_birth") == "15/08/1990"
+    assert saved.data.get("next_field") == "mobile_number"
+    assert "keypad" in (saved.prompt or "").lower()
+
+    by_voice = orch.process_channel_payload(
+        "ivr",
+        {
+            "application_id": app_id,
+            "access_token": token,
+            "transcript": "nine eight seven six five four three two one zero",
+        },
+    )
+    assert by_voice.error != "validation_failed"
+    assert by_voice.state == JourneyState.FIELD_CONFIRMATION.value
+    confirmed = orch.process_channel_payload(
+        "ivr", {"application_id": app_id, "access_token": token, "dtmf": "1"}
+    )
+    assert orch.journey._get_app_by_ref(app_id).form_data.get("mobile_number") == "9876543210"
+    assert confirmed.data.get("next_field") == "address"
 
 
 def test_voice_flow_mock_stt(orch: ChannelOrchestrator):

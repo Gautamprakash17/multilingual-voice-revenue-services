@@ -46,6 +46,7 @@ describe("officer summary cards", () => {
   it("counts statuses from existing queue and history payloads", () => {
     const counts = officerStatusCounts(
       [
+        { processing_status: "DRAFT" },
         { processing_status: "SUBMITTED" },
         { processing_status: "UNDER_REVIEW" },
         { processing_status: "UNDER_REVIEW" },
@@ -54,6 +55,7 @@ describe("officer summary cards", () => {
       [{ processing_status: "ISSUED" }, { processing_status: "REJECTED" }],
     );
     expect(counts).toEqual({
+      inProgress: 1,
       pending: 1,
       underReview: 2,
       needsCorrection: 1,

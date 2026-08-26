@@ -48,6 +48,7 @@ fields:
     prompt: "What is your date of birth? (DD/MM/YYYY)"
     validation:
       format: "%d/%m/%Y"
+      max_age: 120
 
   - name: mobile_number
     type: mobile

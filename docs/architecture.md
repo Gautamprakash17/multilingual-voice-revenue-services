@@ -192,7 +192,7 @@ Typical Income Certificate path:
 
 | Value | Meaning in POC |
 |-------|----------------|
-| `DRAFT` | Application started, not yet submitted |
+| `DRAFT` | Application started, not yet submitted; visible in the officer queue as in progress |
 | `SUBMITTED` | Enum / filters / notifications; happy-path finalize sets processing to `UNDER_REVIEW` |
 | `UNDER_REVIEW` | In officer queue after successful payment/submit |
 | `NEEDS_CORRECTION` | Officer requested correction |
@@ -315,7 +315,7 @@ The officer portal operates on the **same Application** created by the citizen j
 
 | Capability | Behavior |
 |------------|----------|
-| Queue | Applications in review / correction / escalated visibility |
+| Queue | In-progress drafts, submitted/review/correction, and escalated applications |
 | History | Completed officer actions (issued, rejected, escalated, corrections) |
 | Detail | Application ID, processing status, service, channel, fields present, documents, payment, lifecycle |
 | Approve & issue | Generate DEMO PDF → store `ISSUED_CERTIFICATE` → `ISSUED` → notify |
