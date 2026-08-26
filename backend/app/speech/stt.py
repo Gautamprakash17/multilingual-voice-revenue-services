@@ -106,14 +106,25 @@ class LocalSTTProvider(STTProvider):
 
 
 class WhisperSTTProvider(STTProvider):
-    """Optional faster-whisper backend (not required for tests)."""
+    """faster-whisper backend. Model size and beam width are configurable
+    (see app.core.config.Settings) because the "tiny" model — while
+    technically multilingual — is not reliably usable for Hindi/Kannada
+    in practice; "small" or larger is the practical floor for Indic
+    languages on CPU.
+    """
 
     name = "faster-whisper"
 
-    def __init__(self) -> None:
+    def __init__(self, model_size: str | None = None, beam_size: int | None = None) -> None:
         from faster_whisper import WhisperModel
 
-        self._model = WhisperModel("tiny", device="cpu", compute_type="int8")
+        from app.core.config import get_settings
+
+        settings = get_settings()
+        self._model_size = model_size or settings.whisper_model_size
+        self._beam_size = beam_size or settings.whisper_beam_size
+        self._model = WhisperModel(self._model_size, device="cpu", compute_type="int8")
+        self.name = f"faster-whisper-{self._model_size}"
 
     def transcribe(
         self, audio_bytes: bytes, *, language_hint: str | None = None
@@ -136,14 +147,33 @@ class WhisperSTTProvider(STTProvider):
         try:
             segments, info = self._model.transcribe(
                 str(path),
+                # Forcing the language (rather than letting Whisper guess)
+                # matters most for short/quiet clips, where a tiny/small
+                # model's language-ID step is unreliable and will otherwise
+                # silently decode Hindi/Kannada audio as English.
                 language=language_hint or None,
+                task="transcribe",
+                beam_size=self._beam_size,
                 vad_filter=True,
+                # Avoids the model anchoring on a prior (possibly wrong-language)
+                # guess when segments are processed in sequence.
+                condition_on_previous_text=False,
             )
+            segments = list(segments)
             text = " ".join(seg.text.strip() for seg in segments).strip()
+            avg_logprob = (
+                sum(getattr(s, "avg_logprob", 0.0) for s in segments) / len(segments)
+                if segments
+                else -1.0
+            )
+            # Rough confidence proxy from Whisper's own avg_logprob (~0 is confident,
+            # more negative is less confident); clamps into a 0–1 band for audit /
+            # metrics. Journey confirmation is not gated on this value today.
+            confidence = max(0.0, min(1.0, 1.0 + avg_logprob)) if text else 0.0
             return STTResult(
                 transcript=text,
                 language=getattr(info, "language", language_hint),
-                confidence=0.8 if text else 0.0,
+                confidence=confidence,
                 provider=self.name,
             )
         except Exception:

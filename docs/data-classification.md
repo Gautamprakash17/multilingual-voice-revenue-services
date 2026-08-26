@@ -67,7 +67,7 @@ Automated tests assert restricted → cloud denied, zero HTTP on deny, audit omi
 |------|----------------|---------|--------|----------------------|--------------------|--------------------|
 | Recorded mic audio / `audio_b64` | `RESTRICTED` | Local STT | Channel orchestrator | **Ephemeral** — decoded for STT; temp file deleted; **not** durable storage | Citizen produces it | Never sent to cloud; not kept after STT |
 | STT transcript | `RESTRICTED` | Journey input | Orchestrator → JourneyService | In request/reply path; may appear in chat UI | Yes (as recognized text) | Redacted from structured logs |
-| TTS audio (`audio_b64` in reply) | INTERNAL / generated prompt audio | Speak prompts | Client playback | Response payload only; not archived | Heard / playable in UI | Generated locally via eSpeak NG |
+| TTS audio (`audio_b64` in reply) | INTERNAL / generated prompt audio | Speak prompts | Client playback | Response payload only; not archived | Heard / playable in UI | Generated locally via Piper (en/hi) or eSpeak NG (fallback / kn) |
 | Client-supplied transcript fallback | `RESTRICTED` | Dev/fallback when mic denied | Same as text message | Not a stored audio archive | Shown as user text | Local journey processing |
 
 ### Documents

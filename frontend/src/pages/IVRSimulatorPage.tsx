@@ -16,9 +16,11 @@ import {
   acceptsIvrKey,
   appendIvrKey,
   canSubmitIvrSpeech,
+  formatIvrDateKeypadDisplay,
   formatIvrDisplay,
+  isIvrDualInputStep,
   isIvrFreeFormSpeechStep,
-  isIvrKeypadDrivenStep,
+  isIvrKeypadOpen,
   isIvrSpeakButtonEnabled,
   isIvrSpeakControlEnabled,
   ivrAudioVoicePayload,
@@ -26,6 +28,7 @@ import {
   ivrCallPhaseLabel,
   formatCallDuration,
   ivrDtmfPayload,
+  ivrFieldTypeFromServices,
   ivrInputMode,
   ivrKeyLetters,
   ivrKeypadHint,
@@ -84,6 +87,7 @@ export default function IVRSimulatorPage() {
   const [error, setError] = useState<string | null>(null);
   const [languages, setLanguages] = useState<LanguageConfig[]>([]);
   const [services, setServices] = useState<ServiceConfig[]>([]);
+  const [nextField, setNextField] = useState<string | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
   const speechInputRef = useRef<HTMLInputElement>(null);
   const phoneKeypadRef = useRef<HTMLDivElement>(null);
@@ -97,6 +101,7 @@ export default function IVRSimulatorPage() {
   const busyRef = useRef(false);
   const stateRef = useRef<string>("—");
   const authStepRef = useRef("");
+  const nextFieldRef = useRef<string | null>(null);
   const applicationIdRef = useRef<string | null>(null);
   const tokenRef = useRef<string | null>(null);
   const speechStepKeyRef = useRef("");
@@ -107,12 +112,18 @@ export default function IVRSimulatorPage() {
 
   const inCall = Boolean(token && applicationId);
   const resolvedAuthStep = resolveIvrAuthStep(state === "—" ? null : state, authStep);
+  const captureHint = {
+    nextField,
+    fieldType: ivrFieldTypeFromServices(nextField, services),
+  };
   const mode: IvrInputMode = ivrInputMode(
     state === "—" ? null : state,
     resolvedAuthStep,
+    captureHint,
   );
   const speechMode = isIvrFreeFormSpeechStep(mode);
-  const keypadMode = isIvrKeypadDrivenStep(mode) || mode === "collect";
+  const keypadMode = isIvrKeypadOpen(mode);
+  const dualInput = isIvrDualInputStep(mode);
   const phase = ivrCallPhase({ inCall, busy, state: state === "—" ? null : state, mode });
   const keypadHint = useMemo(
     () =>
@@ -138,6 +149,7 @@ export default function IVRSimulatorPage() {
     speechModeRef.current = speechMode;
     stateRef.current = state === "—" ? "—" : state;
     authStepRef.current = resolvedAuthStep;
+    nextFieldRef.current = nextField;
   }
 
   useEffect(() => {
@@ -179,13 +191,20 @@ export default function IVRSimulatorPage() {
       speechStepKeyRef.current = "";
       return;
     }
+    // Date keypad digits in progress — don't steal them with auto-listen.
+    if (dualInput && buffer.length > 0) {
+      stopMicCapture();
+      setListening(false);
+      setMicActive(false);
+      return;
+    }
     if (!shouldAutoEnterIvrListening({ inCall, speechMode, busy })) {
       stopMicCapture();
       setListening(false);
       setMicActive(false);
       return;
     }
-    const stepKey = `${state}:${resolvedAuthStep}`;
+    const stepKey = `${state}:${resolvedAuthStep}:${nextField ?? ""}`;
     if (speechStepKeyRef.current !== stepKey) {
       speechStepKeyRef.current = stepKey;
       speechRef.current = "";
@@ -200,16 +219,16 @@ export default function IVRSimulatorPage() {
       stopMicCapture();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inCall, speechMode, resolvedAuthStep, state, busy]);
+  }, [inCall, speechMode, resolvedAuthStep, state, busy, dualInput, buffer, nextField]);
 
   // DTMF steps → focus the phone keypad so laptop keys hit the same onKey path.
   useEffect(() => {
-    if (!inCall || !keypadMode || speechMode || busy) return;
+    if (!inCall || !keypadMode || busy) return;
     const id = window.setTimeout(() => {
       phoneKeypadRef.current?.focus({ preventScroll: true });
     }, 0);
     return () => window.clearTimeout(id);
-  }, [inCall, keypadMode, speechMode, busy, state, resolvedAuthStep]);
+  }, [inCall, keypadMode, busy, state, resolvedAuthStep, nextField]);
 
   useEffect(() => {
     function onPhysicalKey(event: KeyboardEvent) {
@@ -340,9 +359,20 @@ export default function IVRSimulatorPage() {
     const step = mergeIvrAuthStep(reply.state, incoming, authStepRef.current);
     setAuthStep(step);
     authStepRef.current = step;
-    const nextMode = ivrModeFromJourney(reply.state, step);
+    const nxt =
+      typeof reply.data?.next_field === "string" && reply.data.next_field
+        ? reply.data.next_field
+        : typeof reply.data?.field === "string" && reply.data.field
+          ? reply.data.field
+          : null;
+    setNextField(nxt);
+    nextFieldRef.current = nxt;
+    const nextMode = ivrModeFromJourney(reply.state, step, {
+      nextField: nxt,
+      fieldType: ivrFieldTypeFromServices(nxt, services),
+    });
     speechModeRef.current = isIvrFreeFormSpeechStep(nextMode);
-    keypadModeRef.current = isIvrKeypadDrivenStep(nextMode) || nextMode === "collect";
+    keypadModeRef.current = isIvrKeypadOpen(nextMode);
     setOtpIssued(reply.data?.otp_issued === true);
     const nextPrompt = reply.prompt || reply.message;
     setPrompt(nextPrompt);
@@ -374,6 +404,8 @@ export default function IVRSimulatorPage() {
     setDtmfBuffer("");
     setAuthStep("");
     authStepRef.current = "";
+    setNextField(null);
+    nextFieldRef.current = null;
     stateRef.current = "—";
     setOtpIssued(false);
     setSpeech("");
@@ -427,6 +459,8 @@ export default function IVRSimulatorPage() {
     stateRef.current = "—";
     setAuthStep("");
     authStepRef.current = "";
+    setNextField(null);
+    nextFieldRef.current = null;
     setOtpIssued(false);
     setPrompt("");
     setDtmfBuffer("");
@@ -465,6 +499,14 @@ export default function IVRSimulatorPage() {
     }
   }
 
+  function journeyCaptureHint() {
+    const name = nextFieldRef.current;
+    return {
+      nextField: name,
+      fieldType: ivrFieldTypeFromServices(name, services),
+    };
+  }
+
   function flashKey(key: string) {
     setPressedKey(key);
     window.clearTimeout(pressTimerRef.current);
@@ -476,9 +518,18 @@ export default function IVRSimulatorPage() {
       return;
     }
     audioRef.current.interruptForRecording();
-    const modeNow = ivrModeFromJourney(stateRef.current, authStepRef.current);
-    const keypadNow = isIvrKeypadDrivenStep(modeNow) || modeNow === "collect";
+    const modeNow = ivrModeFromJourney(
+      stateRef.current,
+      authStepRef.current,
+      journeyCaptureHint(),
+    );
+    const keypadNow = isIvrKeypadOpen(modeNow);
     if (!keypadNow) return;
+
+    if (isIvrDualInputStep(modeNow)) {
+      stopMicCapture();
+      setListening(false);
+    }
 
     if (modeNow === "collect" && key === "#") {
       if (bufferRef.current) {
@@ -504,7 +555,11 @@ export default function IVRSimulatorPage() {
     const appId = applicationIdRef.current;
     const tok = tokenRef.current;
     if (!appId || !tok || sendingRef.current) return;
-    const modeNow = ivrModeFromJourney(stateRef.current, authStepRef.current);
+    const modeNow = ivrModeFromJourney(
+      stateRef.current,
+      authStepRef.current,
+      journeyCaptureHint(),
+    );
     if (!isIvrFreeFormSpeechStep(modeNow)) return;
 
     stopMicCapture();
@@ -558,7 +613,11 @@ export default function IVRSimulatorPage() {
     return (
       <div className={`ivr-speech-primary${listening || micActive ? " ivr-speech-listening" : ""}`}>
         <p className="ivr-speech-primary-label" role="status" aria-live="polite">
-          {ivrSpeechListeningLabel(listening, busy, { micActive, micDenied })}
+          {ivrSpeechListeningLabel(listening, busy, {
+            micActive,
+            micDenied,
+            keypadAvailable: dualInput,
+          })}
         </p>
         {lastHeard && !busy && !micActive && (
           <p className="ivr-heard muted" aria-live="polite">
@@ -646,6 +705,73 @@ export default function IVRSimulatorPage() {
     );
   }
 
+  function renderKeypad() {
+    const screenValue =
+      mode === "confirm"
+        ? buffer || "1 / 2"
+        : mode === "collect"
+          ? formatIvrDateKeypadDisplay(buffer)
+          : formatIvrDisplay(buffer);
+    return (
+      <div
+        className={`phone${keypadMode && inCall ? " phone-keypad-active" : ""}`}
+        aria-label="Telephone keypad"
+        ref={phoneKeypadRef}
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (shouldIgnoreIvrPhysicalKey(e.target)) return;
+          const mapped = physicalKeyToIvrKey(e.key);
+          if (!mapped) return;
+          e.preventDefault();
+          e.stopPropagation();
+          onKey(mapped);
+        }}
+      >
+        <div className="phone-screen" aria-live="polite">
+          {screenValue}
+        </div>
+        <div className={`keypad${mode === "confirm" ? " keypad-confirm" : ""}`}>
+          {IVR_KEYS.map((k) => {
+            const allowed = !token || !keypadMode ? false : acceptsIvrKey(mode, k);
+            const letters = ivrKeyLetters(k);
+            return (
+              <button
+                key={k}
+                type="button"
+                className={[
+                  mode === "confirm" && (k === "1" || k === "2") ? "ivr-key-emphasis" : "",
+                  pressedKey === k ? "pressed" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ") || undefined}
+                disabled={!token || !keypadMode || !allowed}
+                onClick={() => onKey(k)}
+                aria-label={`Key ${k}`}
+                aria-pressed={pressedKey === k}
+              >
+                <span>{k}</span>
+                {letters ? <span className="key-letters">{letters}</span> : null}
+              </button>
+            );
+          })}
+        </div>
+        <div className="journey-actions">
+          <button
+            type="button"
+            className="ghost"
+            onClick={() => {
+              audioRef.current.interruptForRecording();
+              setDtmfBuffer("");
+            }}
+            disabled={!buffer}
+          >
+            Clear
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <section className="panel ivr-sim ivr-sim-focus">
       <span className="sim-banner" role="status">
@@ -657,7 +783,7 @@ export default function IVRSimulatorPage() {
           <h1>IVR</h1>
         </div>
         <p className="sim-page-lede muted">
-          Keypad for menus and codes · microphone when the service asks you to speak.
+          Keypad for menus, codes, and date of birth · microphone for spoken answers.
         </p>
       </header>
       {error && (
@@ -688,7 +814,7 @@ export default function IVRSimulatorPage() {
       )}
 
       <div className="ivr-layout-connected">
-      <div className="ivr-phone-shell">
+      <div className={`ivr-phone-shell${dualInput ? " ivr-dob-dual" : ""}`}>
         {inCall && (
           <div className="ivr-call-banner" role="status" aria-live="polite">
             <span className="ivr-call-live">Call connected</span>
@@ -707,7 +833,13 @@ export default function IVRSimulatorPage() {
               className={`ivr-modality${speechMode ? " ivr-modality-speech" : keypadMode ? " ivr-modality-keypad" : ""}`}
               aria-live="polite"
             >
-              {speechMode
+              {speechMode && keypadMode
+                ? listening || micActive
+                  ? "Listening… keypad also ready"
+                  : busy
+                    ? "Processing…"
+                    : "Speak or use keypad"
+                : speechMode
                 ? listening || micActive
                   ? "Listening…"
                   : busy
@@ -785,66 +917,8 @@ export default function IVRSimulatorPage() {
           </div>
         )}
 
-        {inCall && speechMode ? (
-          renderSpeechPrimary()
-        ) : (
-          <div
-            className={`phone${keypadMode && inCall ? " phone-keypad-active" : ""}`}
-            aria-label="Telephone keypad"
-            ref={phoneKeypadRef}
-            tabIndex={0}
-            onKeyDown={(e) => {
-              if (shouldIgnoreIvrPhysicalKey(e.target)) return;
-              const mapped = physicalKeyToIvrKey(e.key);
-              if (!mapped) return;
-              e.preventDefault();
-              e.stopPropagation();
-              onKey(mapped);
-            }}
-          >
-            <div className="phone-screen" aria-live="polite">
-              {mode === "confirm" ? buffer || "1 / 2" : formatIvrDisplay(buffer)}
-            </div>
-            <div className={`keypad${mode === "confirm" ? " keypad-confirm" : ""}`}>
-              {IVR_KEYS.map((k) => {
-                const allowed = !token || !keypadMode ? false : acceptsIvrKey(mode, k);
-                const letters = ivrKeyLetters(k);
-                return (
-                  <button
-                    key={k}
-                    type="button"
-                    className={[
-                      mode === "confirm" && (k === "1" || k === "2") ? "ivr-key-emphasis" : "",
-                      pressedKey === k ? "pressed" : "",
-                    ]
-                      .filter(Boolean)
-                      .join(" ") || undefined}
-                    disabled={!token || !keypadMode || !allowed}
-                    onClick={() => onKey(k)}
-                    aria-label={`Key ${k}`}
-                    aria-pressed={pressedKey === k}
-                  >
-                    <span>{k}</span>
-                    {letters ? <span className="key-letters">{letters}</span> : null}
-                  </button>
-                );
-              })}
-            </div>
-            <div className="journey-actions">
-              <button
-                type="button"
-                className="ghost"
-                onClick={() => {
-                  audioRef.current.interruptForRecording();
-                  setDtmfBuffer("");
-                }}
-                disabled={!buffer}
-              >
-                Clear
-              </button>
-            </div>
-          </div>
-        )}
+        {inCall && speechMode ? renderSpeechPrimary() : null}
+        {!inCall || keypadMode ? renderKeypad() : null}
       </div>
 
       <div className="ivr-side-stack">

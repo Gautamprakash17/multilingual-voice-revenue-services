@@ -135,13 +135,12 @@ Verified against the running stack that successful OTP authentication returns th
 
 Persona names, mobiles, and OTPs remain in `config/seed/personas.yaml` and the demo runbook only. The audit trail records the opaque `persona_id` as `actor_id`; OTP values are never logged or returned.
 
-## Local TTS (eSpeak NG)
+## Local TTS (Piper + eSpeak NG)
 
-Citizen prompts are synthesized **offline** with **eSpeak NG** inside the backend container (`apt` package `espeak-ng`). Languages: `en`, `hi`, `kn` via application `tts_code` mapped inside the TTS provider. Cloud TTS is disabled (`config/providers/providers.yaml`).
+Citizen prompts are synthesized **offline**. **English and Hindi** use **Piper** neural voices when models are present in the backend image. **Kannada** uses **eSpeak NG** (no official Piper `kn` voice in this POC). Cloud TTS is disabled (`config/providers/providers.yaml`).
 
-- Quality is lightweight / robotic formant synthesis — suitable for a POC, not neural natural speech.
 - `MockTTSProvider` (tone WAV) remains available for unit tests that inject a TTS backend.
-- If eSpeak is configured but missing at runtime, the API returns a citizen-safe 503 — it does **not** silently fall back to the mock tone.
+- If Piper fails or is missing, `LocalTTSProvider` falls back to eSpeak NG. If eSpeak is also missing, the API returns a citizen-safe 503 — it does **not** silently fall back to the mock tone.
 
 ## Reproducible deployment check
 

@@ -27,6 +27,7 @@ service_select_unknown: "Sorry, I did not recognise that service. Please say the
 service_select_ambiguous: "I found more than one matching service. Please say the service name or choose one on screen."
 field_applicant_name: "What is your full name?"
 field_date_of_birth: "What is your date of birth? (DD/MM/YYYY)"
+field_date_of_birth_ivr: "What is your date of birth? Enter eight digits as day, month, year on the keypad, or say the date."
 field_mobile_number: "What is your mobile number? (10 digits)"
 field_address: "What is your residential address?"
 field_district: "Which district do you live in?"

@@ -48,7 +48,7 @@ On **Apply** (`/journey`):
 3. Authenticate: mobile `9876543210`, OTP `123456`.
 4. Consent: **I agree**.
 5. Service: `INCOME_CERTIFICATE`.
-6. Fill form fields (guided prompts). Optional: use **voice** — local faster-whisper STT; replies are spoken back with **local eSpeak NG TTS** (en/hi/kn; robotic but offline).
+Citizen prompts are spoken locally with **Piper** (en/hi neural voices) and **eSpeak NG** fallback (kn). Optional: use **voice** — local faster-whisper STT.
 7. Upload three documents: `IDENTITY_PROOF`, `ADDRESS_PROOF`, `INCOME_PROOF` (clean filenames → verified).
 8. Review → **CONFIRM** → fee quote → **PAY** → **PAY** (success).
 9. Show **receipt** text and `UNDER_REVIEW` status in the reply / refresh status.

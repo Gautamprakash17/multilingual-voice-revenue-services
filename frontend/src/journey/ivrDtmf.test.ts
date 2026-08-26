@@ -5,8 +5,13 @@ import {
   canSubmitIvrSpeech,
   formatIvrDisplay,
   isDtmfSubmitLocked,
+  isIvrDualInputStep,
   isIvrFreeFormSpeechStep,
   isIvrKeypadDrivenStep,
+  isIvrKeypadOpen,
+  isIvrDateCaptureField,
+  formatIvrDateKeypadDisplay,
+  ivrFieldTypeFromServices,
   isIvrSpeakButtonEnabled,
   isIvrSpeakControlEnabled,
   ivrCallPhase,
@@ -211,7 +216,78 @@ describe("IVR call phase and speech fallback", () => {
     expect(isIvrFreeFormSpeechStep("none")).toBe(true);
     expect(isIvrKeypadDrivenStep("none")).toBe(false);
   });
+});
 
+describe("IVR date of birth keypad plus voice", () => {
+  it("keeps non-date form fields on speech-only", () => {
+    expect(
+      ivrInputMode("FORM_CAPTURE", "", { nextField: "applicant_name", fieldType: "string" }),
+    ).toBe("none");
+    expect(isIvrDateCaptureField({ nextField: "applicant_name", fieldType: "string" })).toBe(
+      false,
+    );
+  });
+
+  it("opens collect mode for catalogue date fields so keypad and mic are both live", () => {
+    const mode = ivrInputMode("FORM_CAPTURE", "", {
+      nextField: "date_of_birth",
+      fieldType: "date",
+    });
+    expect(mode).toBe("collect");
+    expect(isIvrDualInputStep(mode)).toBe(true);
+    expect(isIvrFreeFormSpeechStep(mode)).toBe(true);
+    expect(isIvrKeypadOpen(mode)).toBe(true);
+    expect(isIvrKeypadDrivenStep(mode)).toBe(false);
+    expect(ivrKeypadHint(mode)).toContain("DDMMYYYY");
+    expect(ivrKeypadHint(mode).toLowerCase()).toContain("speak");
+  });
+
+  it("treats date_of_birth as a date field before the service catalog loads", () => {
+    expect(isIvrDateCaptureField({ nextField: "date_of_birth" })).toBe(true);
+    expect(ivrInputMode("FORM_CAPTURE", "", { nextField: "date_of_birth" })).toBe("collect");
+    expect(
+      ivrFieldTypeFromServices("date_of_birth", [
+        { fields: [{ name: "date_of_birth", type: "date" }] },
+      ]),
+    ).toBe("date");
+  });
+
+  it("buffers eight DDMMYYYY digits and auto-submits, or sends on #", () => {
+    let buf = "";
+    for (const d of "1508199") {
+      buf = appendIvrKey(buf, d, "collect");
+      expect(shouldAutoSubmitDtmf("collect", buf)).toBe(false);
+    }
+    buf = appendIvrKey(buf, "0", "collect");
+    expect(buf).toBe("15081990");
+    expect(shouldAutoSubmitDtmf("collect", buf)).toBe(true);
+    expect(appendIvrKey("15081990", "1", "collect")).toBe("15081990");
+    expect(shouldAutoSubmitDtmf("collect", "15081990", "#")).toBe(true);
+    expect(ivrDtmfPayload("15081990")).toEqual({ modality: "dtmf", dtmf: "15081990" });
+  });
+
+  it("formats the date keypad screen as DD/MM/YYYY while digits arrive", () => {
+    expect(formatIvrDateKeypadDisplay("")).toBe("DD/MM/YYYY");
+    expect(formatIvrDateKeypadDisplay("15")).toBe("15");
+    expect(formatIvrDateKeypadDisplay("1508")).toBe("15/08");
+    expect(formatIvrDateKeypadDisplay("15081990")).toBe("15/08/1990");
+  });
+
+  it("allows laptop keypad digits during dual speech+keypad date capture", () => {
+    expect(
+      shouldAcceptIvrPhysicalKey({
+        inCall: true,
+        keypadMode: true,
+        speechMode: true,
+      }),
+    ).toBe(true);
+    expect(
+      ivrSpeechListeningLabel(false, false, { keypadAvailable: true }),
+    ).toContain("keypad");
+  });
+});
+
+describe("IVR speech steps", () => {
   it("after registration OTP, free-form name input becomes available (not DTMF)", () => {
     const step = resolveIvrAuthStep("AUTHENTICATE", "register_name");
     const mode = ivrInputMode("AUTHENTICATE", step);
@@ -331,7 +407,7 @@ describe("IVR call phase and speech fallback", () => {
     expect(shouldAutoSubmitDtmf("otp", otp)).toBe(true);
   });
 
-  it("ignores physical DTMF while typing in speech fields or when speech mode is active", () => {
+  it("ignores physical DTMF while typing in speech fields; dual date still accepts keypad", () => {
     expect(
       shouldAcceptIvrPhysicalKey({
         inCall: true,
@@ -352,7 +428,7 @@ describe("IVR call phase and speech fallback", () => {
         keypadMode: true,
         speechMode: true,
       }),
-    ).toBe(false);
+    ).toBe(true);
 
     const input = {
       tagName: "INPUT",

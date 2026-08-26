@@ -43,6 +43,7 @@ REQUIRED_KEYS = (
     "service_select_ambiguous",
     "field_applicant_name",
     "field_date_of_birth",
+    "field_date_of_birth_ivr",
     "field_mobile_number",
     "field_address",
     "field_district",

@@ -134,12 +134,11 @@ def test_espeak_is_not_the_mock_tone():
 
 
 @requires_espeak
-def test_local_tts_facade_uses_espeak_by_default():
+def test_local_tts_facade_uses_neural_or_espeak():
     provider = get_tts_provider()
     assert isinstance(provider, LocalTTSProvider)
-    assert provider.name == "espeak-ng"
     result = provider.synthesize(EN_PROMPT, language="en")
-    assert result.provider == "espeak-ng"
+    assert result.provider in {"espeak-ng", "piper"}
     assert result.duration_ms > 800
 
 

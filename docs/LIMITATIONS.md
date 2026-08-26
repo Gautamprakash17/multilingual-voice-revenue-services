@@ -10,7 +10,7 @@ This document separates **intentional POC scope**, **realistic mock adapters**, 
 | Data sovereignty | Fail-closed classification; Data Boundary Gateway; restricted bytes local |
 | Certificate journey | One complete catalogue service: Income Certificate |
 | Channels | Web (text + voice UI), WhatsApp **simulator**, IVR **simulator** |
-| Speech / NLU | Local faster-whisper STT; **local eSpeak NG TTS** (en/hi/kn, offline, may sound robotic); rule-based NLU. Mock TTS remains for unit tests. No external LLM for restricted data. |
+| Speech / NLU | Local faster-whisper STT; **Piper neural TTS** for English/Hindi when voice models are present; **eSpeak NG fallback** (always used for Kannada in this POC — no official Piper `kn` voice). Mock TTS remains for unit tests. No external LLM for restricted data. |
 | Documents | Local upload + deterministic mock OCR/verification |
 | Payment | Mock provider with SUCCESS / FAILURE / TIMEOUT |
 | Receipt | Local plain-text receipt |
@@ -42,9 +42,9 @@ These are **deliberate substitutes** for production systems so the demo is repro
 
 **Partially addressed in the POC:** guided turn-by-turn conversation, language choice (en/hi/kn), voice **and** text modalities, explicit prompts and recovery messages (RETRY, CORRECT, HELP/ESCALATE).
 
-**Speech synthesis:** Citizen prompts are spoken locally with **eSpeak NG** (installed in the backend Docker image). Synthesis is fully offline — no cloud TTS. Quality is lightweight and may sound robotic; this is intentional POC scope, not neural/natural TTS. Unit tests may still inject `MockTTSProvider` (tone WAV).
+**Speech synthesis:** Citizen prompts are spoken locally. **English and Hindi** use **Piper** neural voices when the models are baked into the backend image (`en_US-lessac-medium`, `hi_IN-priyamvada-medium`). **Kannada** uses **eSpeak NG** (no official Piper Kannada voice; a full Indic/MMS neural stack would require PyTorch and is out of this POC). All synthesis is offline — no cloud TTS. Unit tests may still inject `MockTTSProvider` (tone WAV).
 
-**Not claimed:** formal WCAG audit, screen-reader certification, field usability study artifacts, or natural-sounding neural TTS.
+**Not claimed:** formal WCAG audit, screen-reader certification, field usability study artifacts, or production-grade neural TTS for every language (Kannada remains eSpeak in this POC).
 
 ## Observability honesty
 

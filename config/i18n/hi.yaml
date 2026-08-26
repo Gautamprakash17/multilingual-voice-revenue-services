@@ -29,6 +29,7 @@ service_select_unknown: "क्षमा करें, वह सेवा स�
 service_select_ambiguous: "एक से अधिक मिलती-जुलती सेवाएँ मिलीं। कृपया सेवा का नाम बोलें या स्क्रीन पर चुनें।"
 field_applicant_name: "आपका पूरा नाम क्या है?"
 field_date_of_birth: "आपकी जन्मतिथि क्या है? (DD/MM/YYYY)"
+field_date_of_birth_ivr: "आपकी जन्मतिथि क्या है? कीपैड पर आठ अंक दिन-महीना-वर्ष के रूप में दर्ज करें, या तारीख बोलें।"
 field_mobile_number: "आपका मोबाइल नंबर क्या है? (10 अंक)"
 field_address: "आपका आवासीय पता क्या है?"
 field_district: "आप किस जिले में रहते हैं?"

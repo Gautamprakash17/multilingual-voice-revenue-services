@@ -33,6 +33,12 @@ services:
       DOCUMENT_STORAGE_PATH: /app/data/documents
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:5174,http://localhost:3000}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      WHISPER_MODEL_SIZE: ${WHISPER_MODEL_SIZE:-small}
+      WHISPER_BEAM_SIZE: ${WHISPER_BEAM_SIZE:-5}
+      PIPER_BIN: /opt/piper/piper
+      TTS_VOICES_DIR: /app/models/tts
+      PIPER_EN_VOICE: ${PIPER_EN_VOICE:-en_US-lessac-medium.onnx}
+      PIPER_HI_VOICE: ${PIPER_HI_VOICE:-hi_IN-priyamvada-medium.onnx}
     volumes:
       - document_data:/app/data/documents
     ports:

@@ -226,27 +226,36 @@ class ChannelOrchestrator:
                         "I couldn't understand the recording. Please speak clearly in your "
                         "selected language and try again."
                     )
+                prompt = self._prompt_for_state(app, lang)
+                stt_data: dict[str, Any] = {
+                    "stt_mode": "unrecognized",
+                    "stt_provider": provider,
+                    "language_hint": language_hint,
+                    "recovery": "retry_or_type",
+                }
+                if getattr(app, "auth_step", None):
+                    stt_data["auth_step"] = app.auth_step
+                if JourneyState(app.current_state) == JourneyState.FORM_CAPTURE:
+                    nxt = self.journey._next_missing_field(app)
+                    if nxt:
+                        stt_data["next_field"] = nxt
+                        field_def = self.journey.service.field_by_name(nxt)
+                        if (
+                            envelope.channel == Channel.IVR
+                            and field_def
+                            and field_def.type == "date"
+                        ):
+                            prompt = t("field_date_of_birth_ivr", lang)
                 return ChannelReply(
                     application_id=app.application_id,
                     state=app.current_state,
                     message=message,
-                    prompt=self._prompt_for_state(app, lang),
+                    prompt=prompt,
                     language=lang,
                     channel=envelope.channel.value,
                     transcript=None,
                     error="stt_unrecognized",
-                    data={
-                        "stt_mode": "unrecognized",
-                        "stt_provider": provider,
-                        "language_hint": language_hint,
-                        "recovery": "retry_or_type",
-                        # Keep IVR/web auth keypad mode stable across STT retries.
-                        **(
-                            {"auth_step": app.auth_step}
-                            if getattr(app, "auth_step", None)
-                            else {}
-                        ),
-                    },
+                    data=stt_data,
                 )
 
         # Language resolution — do not silently switch on low confidence
@@ -312,6 +321,13 @@ class ChannelOrchestrator:
                 )
             elif localized.state == JourneyState.FIELD_CONFIRMATION.value:
                 localized = self._ivr_field_confirmation_prompts(
+                    localized, app.language or language
+                )
+            elif localized.state in {
+                JourneyState.FORM_CAPTURE.value,
+                JourneyState.CORRECTION.value,
+            }:
+                localized = self._ivr_form_field_prompts(
                     localized, app.language or language
                 )
             else:
@@ -523,6 +539,20 @@ class ChannelOrchestrator:
             return reply
         text = t("field_confirm_heard_ivr", lang, value=value)
         return replace(reply, prompt=text, message=text)
+
+    def _ivr_form_field_prompts(
+        self, reply: JourneyReply, language: str | None
+    ) -> JourneyReply:
+        """IVR date capture: keypad DDMMYYYY or spoken date. Other fields unchanged."""
+        lang = language or "en"
+        nxt = (reply.data or {}).get("next_field") or (reply.data or {}).get("field")
+        if not nxt:
+            return reply
+        field_def = self.journey.service.field_by_name(str(nxt))
+        if not field_def or field_def.type != "date":
+            return reply
+        text = t("field_date_of_birth_ivr", lang)
+        return replace(reply, prompt=text)
 
     def _ivr_menu_prompts(
         self, reply: JourneyReply, language: str | None

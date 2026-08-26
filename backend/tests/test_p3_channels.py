@@ -872,6 +872,44 @@ def test_ivr_dtmf_registration_choice(orch: ChannelOrchestrator):
     assert app.form_data.get("annual_income") == 120000
 
 
+def test_ivr_dob_keypad_eight_digits(orch: ChannelOrchestrator):
+    start = orch.start(channel="ivr")
+    token = start.access_token
+    assert token
+    app_id = start.application_id
+    orch.process_channel_payload(
+        "ivr", {"application_id": app_id, "access_token": token, "dtmf": "1"}
+    )
+    orch.process_channel_payload(
+        "ivr",
+        {"application_id": app_id, "access_token": token, "dtmf": "9876543210"},
+    )
+    otp = current_otp(orch.journey.identity)  # type: ignore[arg-type]
+    orch.process_channel_payload(
+        "ivr", {"application_id": app_id, "access_token": token, "dtmf": otp}
+    )
+    orch.process_channel_payload(
+        "ivr", {"application_id": app_id, "access_token": token, "dtmf": "1"}
+    )
+    orch.process_channel_payload(
+        "ivr", {"application_id": app_id, "access_token": token, "dtmf": "1"}
+    )
+    named = orch.process_channel_payload(
+        "ivr",
+        {"application_id": app_id, "access_token": token, "text": "Gautam Prakash"},
+    )
+    assert named.data.get("next_field") == "date_of_birth"
+    assert "keypad" in (named.prompt or "").lower()
+
+    saved = orch.process_channel_payload(
+        "ivr",
+        {"application_id": app_id, "access_token": token, "dtmf": "15081990"},
+    )
+    assert saved.error != "validation_failed"
+    app = orch.journey._get_app_by_ref(app_id)
+    assert app.form_data.get("date_of_birth") == "15/08/1990"
+
+
 def test_voice_flow_mock_stt(orch: ChannelOrchestrator):
     start = orch.start(channel="web")
     token = start.access_token

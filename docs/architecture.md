@@ -33,7 +33,7 @@ Citizen channels never own their own applications. One **Application** (citizen-
 | Officer | Queue, history, approve & issue, reject, request correction, escalate |
 | Certificate | DEMO/POC PDF (`ISSUED_CERTIFICATE`); not an official government document |
 | Notifications | `NotificationService` + mock SMS / WhatsApp / email providers → `citizen_notifications` |
-| Speech | Local faster-whisper STT; local eSpeak NG TTS; rule-based NLU |
+| Speech | Local faster-whisper STT; Piper neural TTS (en/hi) with eSpeak NG fallback (kn); rule-based NLU |
 | Sovereignty | Data Boundary Gateway; fail-closed `RESTRICTED` / `INTERNAL` / `PUBLIC_SAFE` |
 | Audit | Append-only `audit_events` with redacted metadata |
 | Frontend | React/Vite: Home, Apply, WhatsApp, IVR, Officer |
@@ -104,7 +104,7 @@ PostgreSQL · local document storage · local STT/TTS · mock providers
 | Orchestrator | Ingress boundary check, STT, language, NLU, DTMF→journey mapping, TTS |
 | Journey / officer | State machine, OTP, form, docs, payment, review actions, certificate |
 | Notifications | Status transitions → mock providers → `citizen_notifications` |
-| Data / providers | Postgres, filesystem docs, faster-whisper, eSpeak NG, mocks |
+| Data / providers | Postgres, filesystem docs, faster-whisper, Piper + eSpeak NG, mocks |
 | Boundary | Classification + policy + gateway + audit of allow/deny |
 
 ---
@@ -117,7 +117,7 @@ PostgreSQL · local document storage · local STT/TTS · mock providers
 | `app/core` | Config, DB, security helpers (redaction) |
 | `app/boundary` | Classification, policy, gateway, local/cloud stubs |
 | `app/channels` | Message envelope, adapters, `ChannelOrchestrator` |
-| `app/speech` | Language helpers, STT (`LocalSTTProvider` / faster-whisper), TTS (eSpeak NG) |
+| `app/speech` | Language helpers, STT (`LocalSTTProvider` / faster-whisper), TTS (Piper en/hi + eSpeak NG fallback) |
 | `app/nlu` | Local rule-based intent/slot extraction (`LocalRuleNLUProvider`) |
 | `app/services` | Journey, state machine, catalogue, validation, i18n, documents, receipts, officer, notifications, certificate |
 | `app/adapters` | Mock identity/OTP, payment, OCR/document verification, notification providers |
@@ -267,13 +267,13 @@ Microphone (browser)
   → transcript
   → JourneyService validation / FIELD_CONFIRMATION
   → next state + prompt
-  → LocalTTSProvider (eSpeak NG) → audio_b64 in reply (optional playback)
+  → LocalTTSProvider (Piper en/hi, eSpeak NG fallback) → audio_b64 in reply (optional playback)
 ```
 
 | Concern | Actual implementation |
 |---------|------------------------|
-| STT | `faster-whisper` (`tiny`, CPU) via `WhisperSTTProvider` when installed; else `MockSTTProvider` (`POCSTT:` marker) |
-| TTS | `espeak-ng` CLI (`EspeakTTSProvider`) for `en` / `hi` / `kn`; robotic offline speech |
+| STT | `faster-whisper` (`small` by default, CPU) via `WhisperSTTProvider` when installed; else `MockSTTProvider` (`POCSTT:` marker) |
+| TTS | Piper neural voices for `en` / `hi` when models are present; eSpeak NG fallback (always for `kn` in this POC) |
 | NLU | `LocalRuleNLUProvider` — rules/keywords, no cloud LLM |
 | Audio persistence | **Not durable** — STT uses ephemeral temp files that are deleted; TTS is response payload only |
 | Developer fallback | Typed transcript and/or `encodePocVoice` without claiming live mic |

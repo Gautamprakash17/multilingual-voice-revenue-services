@@ -24,7 +24,7 @@ A **modular monolith** that:
 | One complete certificate journey (Income Certificate) | Multiple live production certificate types |
 | Mock OTP, payment, OCR/verification | Real Aadhaar / UPI / treasury accounts |
 | WhatsApp & IVR **simulators** | Live Meta WhatsApp / PSTN |
-| Local faster-whisper STT + eSpeak NG TTS + rule NLU | Cloud LLM / cloud TTS on restricted data |
+| Local faster-whisper STT + Piper TTS (en/hi) + eSpeak NG fallback (kn) + rule NLU | Cloud LLM / cloud TTS on restricted data |
 | Lightweight metrics + audit | Kubernetes, ELK, Grafana |
 | Officer dashboard with shared POC token | Enterprise IdP |
 
@@ -50,7 +50,7 @@ Details: [docs/LIMITATIONS.md](docs/LIMITATIONS.md) · Coverage: [docs/REQUIREME
 | Multilingual | English, Hindi, Kannada |
 | Channel envelope | Web, WhatsApp sim, IVR sim |
 | Cross-channel resume | Shared application + session token |
-| Local faster-whisper STT + eSpeak NG TTS + rule NLU | Offline; no cloud TTS/LLM for restricted data |
+| Local faster-whisper STT + Piper TTS (en/hi) + eSpeak NG fallback (kn) + rule NLU | Offline; no cloud TTS/LLM for restricted data |
 | Operational metrics | `GET /api/v1/metrics` |
 | Docker Compose | Reproducible local stack |
 

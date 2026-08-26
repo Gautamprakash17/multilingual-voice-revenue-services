@@ -13,7 +13,7 @@ providers:
     local: faster-whisper
     cloud: null
   tts:
-    local: espeak-ng
+    local: piper+espeak-ng
     cloud: null
   nlu:
     local: rules

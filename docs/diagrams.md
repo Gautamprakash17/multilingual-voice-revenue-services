@@ -68,7 +68,7 @@ flowchart TB
 
   subgraph Providers[Local providers]
     STT[faster-whisper STT]
-    TTS[eSpeak NG TTS]
+    TTS[Piper + eSpeak TTS]
     NLU[Rule NLU]
     Mocks[Mock OTP · OCR · Payment · Notify]
   end

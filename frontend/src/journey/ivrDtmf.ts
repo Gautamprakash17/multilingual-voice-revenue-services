@@ -26,9 +26,35 @@ export type ServiceMenuItem = {
   display_name: string;
 };
 
+/** Catalogue field currently being captured — used for date keypad+voice. */
+export type IvrCaptureHint = {
+  nextField?: string | null;
+  fieldType?: string | null;
+};
+
+export function ivrFieldTypeFromServices(
+  nextField: string | null | undefined,
+  services: { fields?: { name: string; type: string }[] }[],
+): string | null {
+  if (!nextField) return null;
+  for (const service of services) {
+    const field = service.fields?.find((item) => item.name === nextField);
+    if (field) return field.type;
+  }
+  return null;
+}
+
+/** True for catalogue date fields (type, with name fallback before catalog loads). */
+export function isIvrDateCaptureField(hint?: IvrCaptureHint | null): boolean {
+  if (!hint) return false;
+  if (hint.fieldType === "date") return true;
+  return hint.nextField === "date_of_birth";
+}
+
 export function ivrInputMode(
   state: string | null | undefined,
   authStep: string | null | undefined = "",
+  capture?: IvrCaptureHint | null,
 ): IvrInputMode {
   switch (state) {
     case "LANGUAGE_SELECT":
@@ -50,6 +76,9 @@ export function ivrInputMode(
     case "PAYMENT_FAILED":
       return "yes_no";
     case "FORM_CAPTURE":
+      // Date fields accept keypad DDMMYYYY and spoken dates together.
+      if (isIvrDateCaptureField(capture)) return "collect";
+      return "none";
     case "CORRECTION":
       return "none";
     case "SUBMITTED":
@@ -84,6 +113,7 @@ export function acceptsIvrKey(mode: IvrInputMode, key: string): boolean {
 export function appendIvrKey(buffer: string, key: string, mode: IvrInputMode): string {
   if (!acceptsIvrKey(mode, key)) return buffer;
   if (mode === "collect" && key === "#") return buffer;
+  if (mode === "collect" && buffer.length >= 8) return buffer;
   if (mode === "mobile" && buffer.length >= 10) return buffer;
   if (mode === "otp" && buffer.length >= 6) return buffer;
   if (mode === "confirm") return key;
@@ -113,7 +143,10 @@ export function shouldAutoSubmitDtmf(
   }
   if (mode === "mobile") return buffer.length === 10;
   if (mode === "otp") return buffer.length === 6;
-  if (mode === "collect") return key === "#";
+  if (mode === "collect") {
+    if (key === "#") return buffer.length > 0;
+    return buffer.length === 8;
+  }
   return false;
 }
 
@@ -212,7 +245,7 @@ export function ivrKeypadHint(
       return services.map((svc, i) => `${i + 1} = ${svc.display_name}`).join(" · ");
     }
     case "collect":
-      return "Use the keypad for digits, then # to send — or speak your answer.";
+      return "Enter 8 digits as DDMMYYYY on the keypad, or speak the date. # also sends.";
     case "none":
       return "Speak your answer — the microphone opens automatically. Keypad is paused.";
     default:
@@ -222,6 +255,16 @@ export function ivrKeypadHint(
 
 export function formatIvrDisplay(buffer: string): string {
   return buffer || "—";
+}
+
+/** Progressive DD/MM/YYYY display while buffering 8 keypad digits. */
+export function formatIvrDateKeypadDisplay(buffer: string): string {
+  const digits = (buffer || "").replace(/\D/g, "").slice(0, 8);
+  if (!digits) return "DD/MM/YYYY";
+  const day = digits.slice(0, 2);
+  const month = digits.slice(2, 4);
+  const year = digits.slice(4, 8);
+  return [day, month, year].filter((part) => part.length > 0).join("/");
 }
 
 /** Payload for IVR keypad submissions — never uses the speech/voice modality. */
@@ -245,8 +288,9 @@ export function resolveIvrAuthStep(
 export function ivrModeFromJourney(
   state: string | null | undefined,
   authStep: string | null | undefined,
+  capture?: IvrCaptureHint | null,
 ): IvrInputMode {
-  return ivrInputMode(state, resolveIvrAuthStep(state, authStep));
+  return ivrInputMode(state, resolveIvrAuthStep(state, authStep), capture);
 }
 
 /**
@@ -270,12 +314,23 @@ export function isIvrKeypadDrivenStep(mode: IvrInputMode): boolean {
   );
 }
 
+/** Date (and similar) steps where keypad and microphone are both live. */
+export function isIvrDualInputStep(mode: IvrInputMode): boolean {
+  return mode === "collect";
+}
+
+/** True when the on-screen keypad should accept DTMF. */
+export function isIvrKeypadOpen(mode: IvrInputMode): boolean {
+  return isIvrKeypadDrivenStep(mode) || isIvrDualInputStep(mode);
+}
+
 /**
  * Free-form voice/simulated-speech steps (registration name, form fields, etc.).
  * Driven by journey state + auth_step via {@link ivrInputMode} — not by field-name hardcoding.
+ * Date capture (`collect`) stays speech-capable so the user can speak or use the keypad.
  */
 export function isIvrFreeFormSpeechStep(mode: IvrInputMode): boolean {
-  return mode === "none";
+  return mode === "none" || mode === "collect";
 }
 
 /** True when free-form speech is expected and the speech input must be usable. */
@@ -403,7 +458,8 @@ export function shouldAcceptIvrPhysicalKey(opts: {
   speechMode: boolean;
   busy?: boolean;
 }): boolean {
-  if (!opts.inCall || opts.speechMode || !opts.keypadMode) return false;
+  // Dual date capture has speechMode and keypadMode both true — keypad still works.
+  if (!opts.inCall || !opts.keypadMode) return false;
   if (opts.busy) return false;
   return true;
 }
@@ -412,11 +468,12 @@ export function shouldAcceptIvrPhysicalKey(opts: {
 export function ivrSpeechListeningLabel(
   listening: boolean,
   busy: boolean,
-  opts?: { micActive?: boolean; micDenied?: boolean },
+  opts?: { micActive?: boolean; micDenied?: boolean; keypadAvailable?: boolean },
 ): string {
   if (busy) return "Processing…";
   if (opts?.micDenied) return "Microphone unavailable — use developer fallback";
   if (listening && opts?.micActive) return "Listening…";
   if (listening) return "Listening…";
+  if (opts?.keypadAvailable) return "Speak the date, or use the keypad";
   return "Speak your answer — keypad is paused for this step";
 }

@@ -3160,6 +3160,14 @@ button:disabled {
   border-radius: 1.25rem;
 }
 
+.ivr-dob-dual .ivr-speech-primary {
+  margin-top: var(--space-2);
+}
+
+.ivr-dob-dual .phone {
+  margin-top: var(--space-2);
+}
+
 main:has(.officer-portal) {
   max-width: 1280px;
 }

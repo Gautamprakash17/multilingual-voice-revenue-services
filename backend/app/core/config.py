@@ -61,6 +61,33 @@ class Settings(BaseSettings):
     otp_ttl_seconds: int = Field(default=300, description="OTP challenge lifetime in seconds")
     otp_max_attempts: int = Field(default=3, description="Failed OTP attempts before reissue")
 
+    # Local STT (faster-whisper). "tiny" is multilingual but has poor accuracy
+    # on Hindi/Kannada; "small" is the practical floor for usable Indic-language
+    # recognition on CPU. Override with WHISPER_MODEL_SIZE if you have GPU/more
+    # CPU headroom (e.g. "medium") or need faster/lower-memory ("base").
+    whisper_model_size: str = Field(
+        default="small",
+        description="faster-whisper model size: tiny|base|small|medium|large-v3",
+    )
+    whisper_beam_size: int = Field(
+        default=5, description="Beam search width; higher = more accurate, slower"
+    )
+
+    # Local TTS: Piper neural voices for English/Hindi; eSpeak NG fallback (incl. Kannada).
+    piper_bin: str = Field(default="piper", description="Piper TTS binary path or name")
+    tts_voices_dir: str = Field(
+        default="data/tts",
+        description="Directory containing Piper ONNX voice files",
+    )
+    piper_en_voice: str = Field(
+        default="en_US-lessac-medium.onnx",
+        description="Piper English voice filename under tts_voices_dir",
+    )
+    piper_hi_voice: str = Field(
+        default="hi_IN-priyamvada-medium.onnx",
+        description="Piper Hindi (Indic) voice filename under tts_voices_dir",
+    )
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
